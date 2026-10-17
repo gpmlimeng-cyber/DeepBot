@@ -6,7 +6,9 @@ import android.view.View
 import android.webkit.WebView
 import app.dsh.mobile.engine.InjectSpec
 import app.dsh.mobile.engine.EngineConfig
+import app.dsh.mobile.engine.ShellState
 import org.json.JSONObject
+import org.json.JSONTokener
 
 /**
  * DeepBot 壳层（v1.3.0）：状态栏、安全区、注入。
@@ -139,6 +141,49 @@ class DeepBotShell(
             "if(old)old.remove();" + patch + extra + probe + "})();"
         runCatching { view.evaluateJavascript(js, null) }
         runCatching { view.evaluateJavascript(BRAND_JS, null) }
+        writeState(spec, top, bottom)
+    }
+
+    /**
+     * 壳侧体检（v1.3.2，永久设施）：把壳知道的事实 + 页面量到的数写进
+     * `/storage/emulated/0/DSH/deepbot/state.json`，见 [app.dsh.mobile.engine.ShellState]。
+     *
+     * 挂在注入之后：此时 CSS 变量与该次规则已经下发，页面量到的就是**生效后**的结果。
+     * 量取是异步回调，失败只写壳侧字段，不影响任何界面行为。
+     */
+    private fun writeState(spec: InjectSpec.Spec, topCss: Int, bottomCss: Int) {
+        val view = web() ?: return
+        val base = LinkedHashMap<String, Any?>()
+        base["enginePort"] = EngineConfig.activePort
+        base["injectSource"] = spec.source
+        base["injectVersion"] = InjectSpec.fileVersion(activity)
+        base["builtinVersion"] = InjectSpec.DEFAULT_VERSION
+        base["ruleCount"] = spec.css.size
+        base["jsCount"] = spec.js.size
+        base["probeOn"] = spec.probe
+        base["statusBarMode"] = statusBarMode.name
+        base["insetTopCss"] = topCss
+        base["insetBottomCss"] = bottomCss
+        base["screenWidthDp"] = activity.resources.configuration.screenWidthDp
+        base["screenHeightDp"] = activity.resources.configuration.screenHeightDp
+        base["densityDpi"] = activity.resources.configuration.densityDpi
+        base["plugins"] = ShellState.deployedPlugins(activity)
+        base["pluginsNote"] = "壳侧部署清单（引擎目录 android-plugins），不等于运行期已挂载"
+        // 先落一版壳侧字段：页面量取是异步回调，量不到时文件里也至少有壳知道的事实
+        ShellState.write(activity, base)
+        runCatching {
+            view.evaluateJavascript(MEASURE_JS) { raw ->
+                val measured = runCatching {
+                    JSONObject(JSONTokener(raw).nextValue() as String)
+                }.getOrNull()
+                if (measured != null) {
+                    for (k in measured.keys()) base[k] = measured.get(k)
+                }
+                ShellState.write(activity, base)
+            }
+        }.onFailure {
+            ShellState.write(activity, base)
+        }
     }
 
     /** 壳内悬浮层避让：工具栏高度、进度条 marginTop、把手可拖范围 */
@@ -185,6 +230,33 @@ class DeepBotShell(
     private fun dp(v: Int): Int = (v * res.displayMetrics.density + 0.5f).toInt()
 
     companion object {
+
+        /**
+         * 页面侧量取（体检文件用）：视口、下发到 DOM 的 inset 变量、会话列实际内边距。
+         * 与 PROBE_JS 的区别是它**不在页面里常驻**，只在注入后取一次数，结果直接落
+         * state.json，不依赖 logcat。
+         */
+        private val MEASURE_JS = """
+(function(){try{
+  var d=document.documentElement;
+  var cc=document.querySelector('[class*="centerCol"]');
+  var cs=cc?getComputedStyle(cc):null,r=cc?cc.getBoundingClientRect():null;
+  return JSON.stringify({
+    dpr:window.devicePixelRatio,
+    innerWidth:window.innerWidth,
+    innerHeight:window.innerHeight,
+    clientWidth:d.clientWidth,
+    topInset:getComputedStyle(d).getPropertyValue('--dsh-mobile-top-inset').trim(),
+    ccPaddingTop:cs?cs.paddingTop:null,
+    ccPaddingBottom:cs?cs.paddingBottom:null,
+    ccTop:r?Math.round(r.top):null,
+    ccW:r?Math.round(r.width):null,
+    btMobile:d.getAttribute('data-bt-mobile'),
+    btPortrait:d.getAttribute('data-bt-portrait'),
+    dshFrame:d.hasAttribute('data-dsh-frame')
+  });
+}catch(e){return JSON.stringify({measureError:String(e)})}})()
+        """.trimIndent()
         /**
          * 品牌替换：把**整块文本恰好是 "DS Bot"** 的叶子节点改成 DeepBot，含 document.title。
          * ds-bot 源码不动（sidebar.js:822 BrandName 写死的），用 MutationObserver 兜 React 重渲染。

@@ -133,6 +133,19 @@ object InjectSpec {
     private var lastLogged: String? = null
 
     /**
+     * 实际生效文件的 `version` 字段（两个文件都没有 → 内置版本号）。
+     *
+     * 只给体检文件用：`inject source=shared` 但 `version=1` 这种「读到了旧文件」的情况，
+     * 光看来源看不出来，得把版本一起摆出来。v7 起 version 只影响**私有文件迁移**，
+     * 不再决定内置规则是否生效（内置规则永远生效）。
+     */
+    fun fileVersion(ctx: Context): Int {
+        val f = if (sharedFile().isFile) sharedFile() else file(ctx)
+        if (!f.isFile) return DEFAULT_VERSION
+        return runCatching { JSONObject(f.readText()).optInt("version", 0) }.getOrDefault(0)
+    }
+
+    /**
      * 保证私有 inject.json 与内置默认规则集同版本（v1.2.122）。
      *
      * 两种情形：
