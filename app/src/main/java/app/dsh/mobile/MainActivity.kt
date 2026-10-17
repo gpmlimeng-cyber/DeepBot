@@ -258,6 +258,11 @@ class MainActivity : Activity() {
                 settings.useWideViewPort = false
                 settings.loadWithOverviewMode = false
             }
+            UiMode.FOLD -> {
+                settings.userAgentString = defaultUa
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = false
+            }
             UiMode.TABLET -> {
                 settings.userAgentString = defaultUa
                 settings.useWideViewPort = true
@@ -277,6 +282,7 @@ class MainActivity : Activity() {
     private fun applyUiViewport(view: WebView) {
         when (uiMode) {
             UiMode.PHONE -> Unit
+            UiMode.FOLD -> view.evaluateJavascript(foldViewportJs(), null)
             UiMode.TABLET -> view.evaluateJavascript(TABLET_VIEWPORT_JS, null)
             UiMode.DESKTOP -> view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
         }
@@ -1684,6 +1690,25 @@ class MainActivity : Activity() {
          * initial-scale = 屏宽/1280 整页缩进屏内；maximum-scale=5 + user-scalable
          * 允许双指缩放细看。执行时机 onPageFinished（此时 clientWidth=设备宽）。
          */
+        /**
+         * 折叠态内屏宽度（CSS px）。
+         *
+         * 来源：这台设备折叠态的 `widthDp ≈ 452.4`（`Configuration.screenWidthDp`），
+         * 取整 452。展开态不在这里判断——那要等接 WindowManager 的 FoldingFeature。
+         */
+        private const val FOLD_WIDTH_CSS = 452
+
+        /** 折叠视口：固定 FOLD_WIDTH_CSS 宽，按屏宽缩放 */
+        private fun foldViewportJs(): String =
+            "(function(){" +
+                "var W=$FOLD_WIDTH_CSS;" +
+                "var m=document.querySelector('meta[name=\"viewport\"]');" +
+                "if(!m){m=document.createElement('meta');m.setAttribute('name','viewport');" +
+                "(document.head||document.documentElement).appendChild(m);}" +
+                "var cw=document.documentElement.clientWidth||412;" +
+                "m.setAttribute('content','width='+W+', initial-scale='+Math.min(1,cw/W).toFixed(4)+', user-scalable=no');" +
+                "})()"
+
         /** 平板视口：固定 768 宽，按屏宽缩放塞进可视区 */
         private const val TABLET_VIEWPORT_JS =
             "(function(){" +

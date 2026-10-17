@@ -10,11 +10,16 @@ import android.content.SharedPreferences
  * 但桌面模式本身有用，所以改成**用户显式选择**，默认手机。
  *
  *   手机：手机 UA，`device-width`，useWideViewPort=false
+ *   折叠：手机 UA，注入 `width=452`（这台设备折叠态的内屏 `widthDp≈452.4`）
  *   平板：平板 UA，注入 `width=768` 的 viewport
  *   电脑：桌面 UA，注入上游现成的 `width=1280` 视口（DESKTOP_VIEWPORT_JS）
+ *
+ * 折叠只做**折叠态（内屏）**；展开态要等接 Jetpack WindowManager 的 hinge/FoldingFeature
+ * 再判断，现在不猜。
  */
 enum class UiMode(val key: String) {
     PHONE("phone"),
+    FOLD("fold"),
     TABLET("tablet"),
     DESKTOP("desktop");
 
