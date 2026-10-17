@@ -33,7 +33,10 @@ class OnboardingActivity : Activity() {
     /** Shizuku 授权结果监听（requestPermission 异步回调） */
     private val shizukuPermListener =
         rikka.shizuku.Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
-            if (requestCode == SHIZUKU_REQ) refreshShizukuStatus()
+            if (requestCode == SHIZUKU_REQ) {
+                Privilege.markShizukuDenied(this, grantResult != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                refreshShizukuStatus()
+            }
         }
 
     override fun attachBaseContext(newBase: android.content.Context) {
@@ -158,9 +161,15 @@ class OnboardingActivity : Activity() {
                 v.setTextColor(getColor(R.color.ds_success))
             }
             Privilege.shizukuServerRunning() -> {
+                // v1.2.158 隐私修复：不再在此自动请求（拒绝后回调会回到这里 → 死循环）。
+                // 引导页的显式入口是"选中 Shizuku 单选项"→ maybeRequestShizuku()。
                 v.text = getString(R.string.ob_cap_shizuku_request)
-                v.setTextColor(getColor(R.color.ds_warn))
-                Privilege.requestShizukuPermission(SHIZUKU_REQ)
+                v.setTextColor(0xFFFFB74D.toInt())
+                v.isClickable = true
+                v.setOnClickListener {
+                    Privilege.requestShizukuPermission(SHIZUKU_REQ, this@OnboardingActivity, explicit = true)
+                }
+
             }
             else -> {
                 v.text = getString(R.string.ob_cap_shizuku_absent)
@@ -172,7 +181,7 @@ class OnboardingActivity : Activity() {
     /** 用户切到 Shizuku 单选时再给一次授权机会（server 后来启动的情形） */
     private fun maybeRequestShizuku() {
         if (Privilege.shizukuServerRunning() && !Privilege.shizukuGranted()) {
-            Privilege.requestShizukuPermission(SHIZUKU_REQ)
+            Privilege.requestShizukuPermission(SHIZUKU_REQ, this@OnboardingActivity, explicit = true)
         }
     }
 

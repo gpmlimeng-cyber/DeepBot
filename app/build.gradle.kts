@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -18,8 +20,8 @@ android {
         // 关键决策：targetSdk 28 —— sideload 分发，豁免 Android 10+ 的 W^X 限制，
         // 允许从 filesDir 直接 execve bionic 二进制（Termux 同款策略）。
         targetSdk = 28
-        versionCode = 169
-        versionName = "1.2.120"
+        versionCode = 238
+        versionName = "1.3.0"
 
         ndk {
             abiFilters += listOf(targetAbi)
@@ -68,6 +70,51 @@ android {
     }
 }
 
+
+
+
+
+// ── runtime 自动匹配 ABI（v1.2.127）─────────────────────────────────────
+// 模拟器（x86_64）与真机（arm64）构建此前要手动替换 assets/runtime.zip（126MB）
+// 并手改 MANIFEST —— 实测踩过"忘了换 → Android 14 报 libz.so EM_AARCH64"。
+// 现按 -Pabi 自动选源（_runtime_bak/rt-{x86_64-current,arm64-work}.zip），
+// 用 .abi 戳记避免重复复制大文件。
+val prepareRuntime by tasks.registering {
+    val abi = targetAbi
+    val projRoot = rootProject.projectDir
+    val assetsZip = file("src/main/assets/runtime.zip")
+    val manifest = file("src/main/assets/runtime/MANIFEST.json")
+    val stamp = file("src/main/assets/runtime/.abi")
+    outputs.upToDateWhen { false }
+    doLast {
+        val last = if (stamp.exists()) stamp.readText().trim() else ""
+        if (last == abi) {
+            logger.lifecycle("runtime: 已是 " + abi + "，跳过")
+            return@doLast
+        }
+        val src = if (abi == "x86_64") File(projRoot, "_runtime_bak/rt-x86_64-current.zip")
+                  else File(projRoot, "_runtime_bak/rt-arm64-work.zip")
+        if (!src.exists()) {
+            logger.warn("runtime: 源缺失 " + src.absolutePath + "，保持 assets 现状")
+            return@doLast
+        }
+        src.copyTo(assetsZip, overwrite = true)
+        val sha = MessageDigest.getInstance("SHA-256").digest(assetsZip.readBytes())
+            .joinToString("") { b -> "%02x".format(b) }
+        val updated = manifest.readLines().joinToString("\n") { line ->
+            when {
+                line.contains("\"version\"") -> "  \"version\": \"v1.2.102-" + abi + "\","
+                line.contains("\"sha256\"") -> "  \"sha256\": \"" + sha + "\","
+                else -> line
+            }
+        }
+        manifest.writeText(updated)
+        stamp.writeText(abi)
+        logger.lifecycle("runtime: → " + abi)
+    }
+}
+tasks.named("preBuild") { dependsOn(prepareRuntime) }
+
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // 扩展中心解包链路：Termux .deb 的 data.tar.xz 解码（纯 Java 实现，~110KB）
@@ -81,4 +128,8 @@ dependencies {
     implementation("org.java-websocket:Java-WebSocket:1.6.0")
     // 离线语音识别已移除（v1.2.75）：small 模型质量差、大模型 228MB 不划算。
     // 语音通道 = 系统识别 → 云端 API（免费或自建，OpenAI 兼容），见 CloudAsr。
+    // 离线 OCR（v1.2.123）：ML Kit 中文文本识别 bundled 版——模型随 APK 分发，
+    // 不依赖 Google Play 服务（国内 ROM 可用）。无障碍节点树缺失的场景
+    // （WebView 不暴露节点、自绘/Canvas 界面）从截图提取文字作为 dump 兜底。
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }

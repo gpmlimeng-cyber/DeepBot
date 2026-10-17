@@ -1061,7 +1061,7 @@
                         android:layout_width="36dp"
                         android:layout_height="36dp"
                         android:padding="8dp"
-                        android:src="@drawable/ic_package"
+                        android:src="@drawable/ic_puzzle"
                         android:background="@drawable/bg_icon_chip_soft"
                         android:tint="@color/ds_accent" />
 
@@ -1115,7 +1115,7 @@
                         android:layout_width="36dp"
                         android:layout_height="36dp"
                         android:padding="8dp"
-                        android:src="@drawable/ic_mic"
+                        android:src="@drawable/ic_waveform"
                         android:background="@drawable/bg_icon_chip_soft"
                         android:tint="@color/ds_accent" />
 
@@ -1201,6 +1201,64 @@
                         android:layout_height="20dp"
                         android:src="@drawable/ic_chevron" />
                 </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="0.5dp"
+                    android:layout_marginStart="66dp"
+                    android:background="#22FFFFFF" />
+
+                <!-- 局域网访问 WebUI（v1.2.160）：app 内反向代理（独立端口 3090），
+                     让同网段设备用原生 WebUI 连上本机引擎。默认关闭。 -->
+                <LinearLayout
+                    android:id="@+id/rowLanWeb"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="14dp"
+                    android:background="?android:attr/selectableItemBackground">
+
+                    <ImageView
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:padding="8dp"
+                        android:src="@drawable/ic_link"
+                        android:background="@drawable/bg_icon_chip_soft"
+                        android:tint="#FF7DD3FC" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical"
+                        android:layout_marginStart="14dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/setting_lan_web"
+                            android:textColor="#FFFFFFFF"
+                            android:textSize="16sp" />
+
+                        <TextView
+                            android:id="@+id/lanWebSub"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/setting_lan_web_sub"
+                            android:textColor="#FF8A94A3"
+                            android:textSize="12sp"
+                            android:layout_marginTop="2dp" />
+                    </LinearLayout>
+
+                    <Switch
+                        android:id="@+id/swLanWeb"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp" />
+                </LinearLayout>
+
             </LinearLayout>
 
 <!-- ============ 其他分组 ============ -->
@@ -1221,54 +1279,7 @@
                 android:orientation="vertical"
                 android:background="@drawable/bg_card">
 
-                <!-- 试验性功能开关（v1.2.95）：开启后才显示悬浮窗/麦克风/语音服务/本地识别 -->
-                <LinearLayout
-                    android:id="@+id/rowExperimental"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:paddingHorizontal="16dp"
-                    android:paddingVertical="14dp"
-                    android:background="?android:attr/selectableItemBackground">
 
-                    <ImageView
-                        android:layout_width="36dp"
-                        android:layout_height="36dp"
-                        android:padding="8dp"
-                        android:src="@drawable/ic_language"
-                        android:background="@drawable/bg_icon_chip_soft"
-                        android:tint="#FFF2B36B" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical"
-                        android:layout_marginStart="14dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/setting_experimental"
-                            android:textColor="@color/ds_text_primary"
-                            android:textSize="16sp" />
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/setting_experimental_sub"
-                            android:textColor="@color/ds_text_secondary"
-                            android:textSize="12sp"
-                            android:layout_marginTop="2dp" />
-                    </LinearLayout>
-
-                    <Switch
-                        android:id="@+id/swExperimental"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="10dp" />
-                </LinearLayout>
 
                 <!-- 语言 Language -->
                 <LinearLayout

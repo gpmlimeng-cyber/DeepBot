@@ -244,8 +244,6 @@ Sie können auch ohne Update fortfahren, die Oberfläche wird dann aber nicht an
     <string name="webview_gate_update">So aktualisieren Sie</string>
     <string name="webview_gate_continue">Trotzdem fortfahren</string>
     <string name="ticker_working">In Arbeit …</string>
-    <string name="setting_experimental">Experimentelle Funktionen</string>
-    <string name="setting_experimental_sub">Standardmäßig aus. Wenn aktiviert, erscheinen diese Einträge: Schwebe-Fenster, Mikrofon-Berechtigung, Sprachdienste, lokale Erkenner-App.</string>
     <string name="app_language_sub">Anzeigesprache der App-Oberfläche (das WebUI folgt dem System)</string>
     <string name="app_language_sub_current">Anzeigesprache · aktuell: %1$s</string>
     <string name="lang_zh">Chinesisch</string>
@@ -431,4 +429,44 @@ Sie können auch ohne Update fortfahren, die Oberfläche wird dann aber nicht an
     <string name="setting_reload_inject_sub">inject.json wird bei jedem Seitenaufruf neu gelesen; hier die Seite sofort neu laden (ohne App-Neustart)</string>
     <string name="inject_reload_queued">Seite wird beim Zurückkehren neu geladen</string>
     <string name="scale_recommended">Empfohlen</string>
+
+    <!-- v1.3.0: LAN WebUI -->
+    <string name="setting_lan_web">LAN-WebUI-Zugriff</string>
+    <string name="setting_lan_web_sub">Ermöglicht Browsern im selben Netzwerk den Zugriff auf die WebUI dieses Telefons (Port 3090).</string>
+    <string name="lan_web_consent">Beim Aktivieren wird ein zufälliger 6-stelliger Code erzeugt (in die Zwischenablage kopiert und nur einmal angezeigt). Jeder im selben Netzwerk kann mit diesem Code die WebUI öffnen und den Agenten steuern. Nur in vertrauenswürdigen Netzwerken aktivieren.</string>
+    <string name="lan_dialog_title">LAN-WebUI ist aktiv</string>
+    <string name="lan_dialog_code_label">Zugriffscode (antippen zum Kopieren)</string>
+    <string name="lan_dialog_hint">Öffne die Adresse in einem Browser am Computer und gib den Code ein. Der Code wird nur einmal angezeigt.</string>
+    <string name="lan_dialog_copied_code">Code %1$s kopiert</string>
+    <string name="lan_dialog_copied_host">Adresse kopiert</string>
+
+    <!-- v1.3.0: Benachrichtigungen -->
+    <string name="notif_a11y_active_title">DSH bedient das Gerät</string>
+    <string name="notif_a11y_active_text">Schritt %1$d · %2$s</string>
+    <string name="notif_a11y_open_app">App öffnen</string>
+    <string name="notif_a11y_op_tap">tippen</string>
+    <string name="notif_a11y_op_swipe">wischen</string>
+    <string name="notif_a11y_op_scroll">scrollen</string>
+    <string name="notif_a11y_op_input">eingeben</string>
+    <string name="notif_a11y_op_key">Taste drücken</string>
+    <string name="notif_a11y_op_launch">App öffnen</string>
+    <string name="notif_a11y_op_loop">Sequenz ausführen</string>
+    <string name="notif_a11y_op_other">bedienen</string>
+    <string name="notif_lan_title">LAN-WebUI ist aktiv</string>
+    <string name="notif_lan_text">%1$s · zum Beenden „Stoppen" tippen</string>
+    <string name="notif_lan_action_off">Stoppen</string>
+    <string name="notif_lan_channel">LAN-WebUI</string>
+
+    <!-- v1.3.0: Plugin-Verwaltung -->
+    <string name="plugin_uninstall">Deinstallieren</string>
+    <string name="plugin_uninstalling">Wird deinstalliert…</string>
+    <string name="code_toast_fallback">Code %1$s kopiert</string>
+    <string name="code_copied_hint">Code kopiert</string>
+    <string name="code_copy">Kopieren</string>
+    <string name="code_copied_toast">%1$s kopiert</string>
+    <string name="overlay_exit_daemon">Daemon beenden</string>
+    <string name="splash_preparing">Laufzeit wird vorbereitet…</string>
+    <string name="splash_starting">Engine wird gestartet…</string>
+    <string name="splash_loading">Oberfläche wird geladen…</string>
+    <string name="splash_hint">Bitte warte ein paar Sekunden…</string>
 </resources>

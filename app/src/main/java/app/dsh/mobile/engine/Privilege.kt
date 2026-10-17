@@ -162,6 +162,42 @@ object Privilege {
     }.getOrNull()
 
     /**
+     * 统一提权执行（v1.2.173）：**Shizuku 优先 → su 兜底**。
+     *
+     * ## 为什么要这个入口（实测踩坑）
+     * 本机是 **Shizuku 模式**，`engine/bin/su` 是一个会主动拒绝的 shim
+     * （`su gate: priv mode != ROOT, deny su`）→ `runSu()` 永远失败。
+     * 而所有依赖提权的自愈逻辑（属主修复、杀残留进程）此前都只走 `runSu`
+     * → **在 Shizuku 模式下全部静默失效**（实测症状：重装 APK 后 uid 变化，
+     * 插件文件属主过期 → app 读不了 → 引擎报 `failed to import`；局域网代理
+     * 同样起不来）。
+     *
+     * ## 为什么 Shizuku 能修 app 私有目录
+     * Shizuku 以 **adb(2000) 身份**执行命令，shell 对 `/data/user/0/<pkg>/` 有
+     * 访问权（可 chown/chmod/kill），这正是我们需要的，且**不需要 ROOT**。
+     *
+     * @return 命令输出；两条通道都不可用时返回 null
+     */
+    fun runPrivileged(ctx: android.content.Context, command: String): String? {
+        // ① Shizuku 通道（本机主路径）
+        val viaShizuku = runCatching {
+            if (shizukuUsable()) {
+                val out = shizukuExec(ctx, command)
+                Log.i(TAG, "runPrivileged via shizuku: ${out.trim().take(80)}")
+                return out
+            }
+        }.onFailure { Log.w(TAG, "runPrivileged shizuku failed: ${it.message}") }
+        Unit
+        // ② su 兜底（ROOT 模式 / 普通设备）
+        runSu(command, timeoutMs = 8_000L)?.let {
+            Log.i(TAG, "runPrivileged via su: ${it.trim().take(80)}")
+            return it
+        }
+        Log.w(TAG, "runPrivileged: neither shizuku nor su available")
+        return null
+    }
+
+    /**
      * 本机桥的请求鉴权（v1.2.100）—— **AgentBridge 与 ShizukuHttpBridge 共用**。
      *
      * ## 为什么放在这里
@@ -279,8 +315,34 @@ object Privilege {
      * 请求 Shizuku 授权（弹 Shizuku 的授权对话框）。
      * 调用方需先 Shizuku.addRequestPermissionResultListener 接收结果（见 Onboarding）。
      */
-    fun requestShizukuPermission(requestCode: Int) {
-        rikka.shizuku.Shizuku.requestPermission(requestCode)
+    /**
+     * 申请 Shizuku 授权（v1.2.158 隐私修复，issue 反馈「拒绝后仍反复弹窗」）。
+     *
+     * 根因：设置页/引导页的**状态刷新**路径也在无条件调用本函数，而授权结果回调
+     * 又会触发刷新 → 用户每拒绝一次就再弹一次，直到同意为止。
+     * 现在：**拒绝即尊重** —— 记录用户已拒绝，之后只有显式操作
+     * （用户点授权入口，explicit = true）才会再次弹窗。
+     */
+    fun requestShizukuPermission(requestCode: Int, ctx: android.content.Context? = null,
+                                 explicit: Boolean = false) {
+        if (ctx != null) {
+            if (!explicit && shizukuDenied(ctx)) return     // 尊重拒绝：不自动弹
+            if (explicit) markShizukuDenied(ctx, false)     // 用户主动再要 → 重置标记
+        }
+        runCatching { rikka.shizuku.Shizuku.requestPermission(requestCode) }
+    }
+
+    private const val PREFS_PRIV = "dsh_priv_state"
+    private const val KEY_SHIZUKU_DENIED = "shizuku_denied"
+
+    /** 用户是否已明确拒绝过 Shizuku 授权（拒绝即尊重，不再自动弹窗） */
+    fun shizukuDenied(ctx: android.content.Context): Boolean =
+        ctx.getSharedPreferences(PREFS_PRIV, android.content.Context.MODE_PRIVATE)
+            .getBoolean(KEY_SHIZUKU_DENIED, false)
+
+    fun markShizukuDenied(ctx: android.content.Context, denied: Boolean) {
+        ctx.getSharedPreferences(PREFS_PRIV, android.content.Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_SHIZUKU_DENIED, denied).apply()
     }
 
     /**
@@ -356,14 +418,21 @@ object Privilege {
     fun dshHomeNeedsOwnershipFix(ctx: Context): Boolean {
         val home = EngineConfig.dshHome(ctx)
         return runCatching {
-            if (findSu() == null) return false
-            // 用实测可用的 su 形式（v1.2.100：toybox su 不认 -c）
-            val out = runSu(
-                "find " + shellQuote(home.absolutePath) +
-                    " -not -user " + android.os.Process.myUid() + " -print -quit",
-                timeoutMs = 3_000L,
-            ) ?: return false
-            out.isNotBlank()
+            // v1.2.173：改用 runPrivileged（Shizuku 优先）—— Shizuku 模式下 su 是拒绝 shim。
+            val engine = java.io.File(home.parentFile, "engine")
+            val uid = android.os.Process.myUid()
+            val out = runPrivileged(
+                ctx,
+                "find " + shellQuote(home.absolutePath) + " " + shellQuote(engine.absolutePath) +
+                    " -not -user " + uid + " -print -quit 2>/dev/null",
+            )
+            if (out == null) {
+                Log.w(TAG, "ownership check skipped: no privileged channel (shizuku/su)")
+                return false
+            }
+            val bad = out.isNotBlank()
+            if (bad) Log.w(TAG, "ownership check: found files not owned by $uid → will chown")
+            bad
         }.getOrDefault(false)
     }
 
@@ -373,9 +442,18 @@ object Privilege {
         return runCatching {
             if (findSu() == null) return false
             val uid = android.os.Process.myUid()
+            // ⚠️ v1.2.171 实测补充：必须**同时**修 engine/android-plugins。
+            // 每次重装 APK，Android 会分配**新的 app uid**，而 `engine/` 下的插件文件
+            // （priv-mode / bridge-token / fast-mode）属主还是旧 uid + 权限 600 →
+            // app 自己的 node 进程（新 uid）**读不了插件** → 引擎日志
+            // `android-fast-mode: failed to import` / EACCES → 插件功能全哑。
+            // 实测症状：AI 找不到 fast_mode 工具、局域网代理进程起不来。
+            val engine = java.io.File(home.parentFile, "engine")
+            Log.i(TAG, "fixHomeOwnership: chown -R $uid:$uid (home + engine, uid changed after reinstall)")
             val out = runSu(
-                "chown -R $uid:$uid " + shellQuote(home.absolutePath),
-                timeoutMs = 5_000L,
+                "chown -R $uid:$uid " + shellQuote(home.absolutePath) + " " +
+                    shellQuote(engine.absolutePath) + " 2>/dev/null; " +
+                    "chmod -R u+rwX " + shellQuote(engine.absolutePath) + " 2>/dev/null; echo ok",
             ) ?: return false
             Log.i(TAG, "fixHomeOwnership: chown dsh-home to uid $uid (${out.trim().take(60)})")
             true

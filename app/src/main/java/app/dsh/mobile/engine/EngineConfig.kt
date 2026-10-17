@@ -290,6 +290,59 @@ object EngineConfig {
             }
         }
 
+        // ⚠️ v1.2.159 修复「对话丢失」疑根：链接前做**真实读写探测**。
+        // 日志里反复出现 `session-persistence-jsonl: EACCES scandir .../sessions`——
+        // 指向外部存储（Documents/dshdata）的软链存在，但**引擎进程实际列目录被拒**
+        // （Android 13+ 分区存储 / run-as 受限挂载等场景下 File 操作看似可用、真读写失败）
+        // → 会话根本没持久化 → 用户重进应用对话全部丢失。
+        // 探测失败 → 回退内部存储（不建软链、拆旧链），数据至少写在本机私有区。
+        val pubWritable: Boolean = runCatching {
+            // ⚠️ v1.2.159 真机取证（PLZ110）：以 app uid `ls <dir>` 报 Permission denied，
+            // 但 **Java `File.list()` 在 FUSE 上对这种目录返回空数组而不是 null**（老坑），
+            // 所以"list() != null"永远为真、探测形同虚设。
+            // 改为**写入 + 列名字 + 读回**三步，用真实文件名验证（不依赖 null 语义）。
+            val marker = ".dsh-probe-" + System.nanoTime()
+            val pf = File(pub, marker)
+            pf.writeText("ok")
+            val names = pub.list()?.toList().orEmpty()
+            val seen = names.contains(marker)
+            val readBack = pf.isFile && pf.readText() == "ok"
+            pf.delete()
+            val ok = seen && readBack
+            ok
+        }.getOrDefault(false)
+        if (!pubWritable) {
+            // v1.2.159 实测取证（真机 PLZ110）：目录 drwxrws--- u0_a299 media_rw ——
+            // **重装 app 后 uid 变了（安装 uid 会变），旧目录 770 直接拒绝新 uid**，
+            // 于是引擎 scandir EACCES、会话永不落盘、重进应用对话全丢。
+            // 先尝试**接管**：su 改属主/权限 + 清掉别的 uid 留下的不可读文件；
+            // 不行再回退内部存储（数据至少留在本机私有区）。
+            val q = "" + 34.toChar() + ""
+            val suCmd = "chown -R " + android.os.Process.myUid() + ":" + android.os.Process.myUid() +
+                " " + q + "$pub" + q +
+                " 2>/dev/null; chmod -R u+rwX " + q + "$pub" + q +
+                " 2>/dev/null; echo ok"
+            val fixed = runCatching { Privilege.runSu(suCmd)?.contains("ok") == true }
+                .getOrDefault(false)
+            val retried = fixed && runCatching {
+                val marker2 = ".dsh-probe-" + System.nanoTime()
+                val pf2 = File(pub, marker2)
+                pf2.writeText("ok")
+                val ok = (pub.list()?.toList().orEmpty().contains(marker2)) &&
+                    pf2.isFile && pf2.readText() == "ok"
+                pf2.delete()
+                ok
+            }.getOrDefault(false)
+            if (retried) {
+                Log.w(TAG, "$name: took ownership of $pub (uid changed after reinstall) — external storage OK now")
+            } else {
+                Log.w(TAG, "$name: public storage NOT writable ($pub) — keeping data internal (no symlink)")
+                runCatching { if (Files.isSymbolicLink(priv.toPath())) priv.delete() }
+                priv.mkdirs()
+                return false
+            }
+        }
+
         // 已就绪：软链在、目标在
         if (isLink && pub.exists()) return true
 
@@ -428,6 +481,40 @@ object EngineConfig {
      *
      * 只覆盖 id 精确匹配的插件；上游升级若改 id，未知条目会被忽略（不阻断启动）。
      */
+    /**
+     * 运行期修复 engine/bin 里指向 Termux 的 wrapper shebang（v1.2.159）。
+     *
+     * 背景（真机 AI 反馈实测）：`getprop` 一跑就崩 `bad interpreter` —— 设备上 **37 个**
+     * wrapper 的 shebang 仍是 `#!/data/data/com.termux/files/usr/bin/sh`，该路径在本机不存在。
+     * 打包脚本 `collect-termux-runtime.sh` 里早有"归一为 /system/bin/sh"的一段，但它只
+     * **构建期**生效；老 runtime（或扩展解出的 runtime）里仍带着旧 shebang，运行期无人兜底。
+     * 这里做幂等自愈：只改第一行 shebang，其余内容一字不动（那些 shim 遮蔽系统命令是
+     * **有意的**，见打包脚本注释，不能删）。
+     */
+    fun healTermuxShebangs(ctx: android.content.Context) {
+        runCatching {
+            val bin = File(engineRoot(ctx), "bin")
+            if (!bin.isDirectory) return
+            var fixed = 0
+            bin.listFiles()?.forEach { f ->
+                if (!f.isFile) return@forEach
+                val head = f.inputStream().use { ins ->
+                    val buf = ByteArray(2); if (ins.read(buf) == 2) String(buf) else ""
+                }
+                if (head != "#!") return@forEach
+                val first = f.bufferedReader().use { it.readLine() } ?: return@forEach
+                if (!first.contains("com.termux")) return@forEach
+                runCatching {
+                    val rest = f.readLines().drop(1)
+                    f.writeText("#!/system/bin/sh\n" + rest.joinToString("\n") + "\n")
+                    f.setExecutable(true, false)
+                    fixed++
+                }
+            }
+            if (fixed > 0) Log.i(TAG, "healed $fixed Termux shebang(s) in engine/bin")
+        }.onFailure { Log.w(TAG, "shebang heal failed: ${it.message}") }
+    }
+
     fun ensureAndroidOverlay(ctx: android.content.Context): File {
         val f = File(engineRoot(ctx), "android-overlay.yml")
         // NOTE: keep this file free of CJK text — the i18n gate scans Kotlin string
@@ -501,6 +588,43 @@ object EngineConfig {
             |    # the device capabilities it is meant to have (found in review).
             |    - id: android-bridge-token
             |      name: ./android-plugins/bridge-token.mjs
+            |
+            |# Accessibility-time thinking switch (v1.2.165): the agent runs `fast on`
+            |# before an accessibility task, so later steps stop paying the reasoning
+            |# cost; `fast off` restores normal conversation. The plugin reads the
+            |# ${'$'}DSH_HOME/fast-mode marker file and only affects reasoningEffort.
+            |- insert:
+            |    - id: android-fast-mode
+            |      name: ./android-plugins/fast-mode.mjs
+            |
+            |# Narrow-screen UI fixes (v1.2.175 - v1.2.181). Each is a *client plugin
+            |# package* (directory form, e.g. narrow-sidebar/package.json): the package
+            |# declares dsh.client + exports["./client"], and the engine's client-modules
+            |# scanner discovers it from Loader entries and injects the browser bundle.
+            |# Why plugins instead of patching the engine source: the user asked for a
+            |# plugin form so it never conflicts with other UI plugins and survives
+            |# engine upgrades.
+            |#
+            |#   narrow-sidebar  - portrait + sidebar expanded: sidebar takes the full
+            |#                     width and the squeezed conversation column hides.
+            |#   narrow-settings - narrow screens: the settings dialog stacks vertically
+            |#                     (nav becomes a horizontally scrollable top bar) instead
+            |#                     of squeezing the content column to ~150px.
+            |#   narrow-rightbar - narrow screens: the right panel (diff / changes view)
+            |#                     is promoted to a full-screen overlay while open, which
+            |#                     works around computeColumns() collapsing it to width 0.
+            |- insert:
+            |    - id: android-narrow-sidebar
+            |      name: ./android-plugins/narrow-sidebar/index.js
+            |
+            |- insert:
+            |    - id: android-narrow-settings
+            |      name: ./android-plugins/narrow-settings/index.js
+            |
+            |- insert:
+            |    - id: android-narrow-rightbar
+            |      name: ./android-plugins/narrow-rightbar/index.js
+            |
             |""".trimMargin()
         runCatching {
             if (!f.isFile || f.readText() != body) f.writeText(body)
@@ -508,15 +632,61 @@ object EngineConfig {
         // The overlay references the plugins by relative path, so the files must
         // sit beside it. Deploy from assets (kept in sync by the same idempotent check).
         runCatching {
-            listOf("priv-mode.mjs", "bridge-token.mjs").forEach { fileName ->
+            // 单文件插件（.mjs）：overlay 直接指向文件
+            listOf("priv-mode.mjs", "bridge-token.mjs", "fast-mode.mjs").forEach { fileName ->
                 val src = ctx.assets.open("android-plugins/$fileName").use { it.readBytes() }
                 val dst = File(f.parentFile, "android-plugins/$fileName")
-                dst.parentFile?.mkdirs()
-                val text = src.toString(Charsets.UTF_8)
-                if (!dst.isFile || dst.readText() != text) dst.writeText(text)
+                deployOne(dst, src.toString(Charsets.UTF_8), fileName)
             }
-        }.onFailure { Log.w(TAG, "android plugin deploy failed: ${it.message}") }
+            // 目录形式的客户端插件包（v1.2.175+）：引擎按 package.json 的 name 索引
+            // 浏览器端 bundle，所以 index.js / client.js / package.json 三个文件
+            // 必须同目录且完整。缺任何一个 → client-modules 抛
+            // "declares dsh.client but exports no ./client bundle" 或 bundle 加载后
+            // 未注册（"loaded without registering"）。
+            // 新增插件的步骤：① 在 assets 建目录（含这三个文件）
+            //               ② 在此列表追加目录名
+            //               ③ 在 overlay 的 insert 段追加一条 entry（指向 index.js）
+            listOf("narrow-sidebar", "narrow-settings", "narrow-rightbar").forEach { pkg ->
+                listOf("package.json", "index.js", "client.js").forEach { fileName ->
+                    val src = ctx.assets.open("android-plugins/$pkg/$fileName")
+                        .use { it.readBytes() }
+                    val dst = File(f.parentFile, "android-plugins/$pkg/$fileName")
+                    deployOne(dst, src.toString(Charsets.UTF_8), "$pkg/$fileName")
+                }
+            }
+        }.onFailure { Log.w(TAG, "android plugin deploy failed: ${it::class.simpleName}: ${it.message}", it) }
         return f
+    }
+
+    /**
+     * 把一个资产文本部署到引擎目录，带「重装后自愈」语义。
+     *
+     * ⚠️ v1.2.173 实测背景：每次重装 APK，Android 分配**新 uid**，而旧插件文件
+     * 属主仍是旧 uid + 权限 600 → app 自己读不了（EACCES → 引擎 "failed to import"）。
+     * 提权修复走不通（Shizuku 的 adb 身份无权访问 app 私有目录）。
+     * 但 app 对自己的目录有写权限：删掉目录里的文件只需目录写权限，不需要文件本身的
+     * 权限 → 正解 = 读不了就**删掉重建**。
+     *
+     * ⚠️ v1.2.174：判空必须写成 `!dst.isFile || …`。写成 `dst.isFile && …` 时
+     * 文件不存在会让整式为 false（stale=false），于是文件**永不创建**。
+     *
+     * @param dst 目标文件（父目录会自动创建）。
+     * @param text 期望内容。
+     * @param label 日志用标签。
+     */
+    private fun deployOne(dst: File, text: String, label: String) {
+        dst.parentFile?.mkdirs()
+        val stale = !dst.isFile ||
+            runCatching { dst.readText() != text }.getOrDefault(true)
+        if (stale) {
+            runCatching { dst.delete() }   // 旧属主也能删（目录归 app）
+            if (!dst.isFile || runCatching { dst.readText() }.getOrNull() != text) {
+                dst.writeText(text)
+            }
+        }
+        dst.setReadable(true, false)
+        dst.setReadable(true, true)
+        Log.i(TAG, "plugin deployed: $label (${dst.length()} bytes, readable=${dst.canRead()})")
     }
 
     /**
@@ -786,7 +956,7 @@ object EngineConfig {
             // 漏掉了这两个，但种子仍在教 agent 使用 → agent 照着调用得到 command not found
             // （Agent 审计 N8 实测）。它们解决的是真问题：agent 常以 `bash -c '... pkill -f X'`
             // 形式执行，完整命令行含 pattern 会命中自己并自杀，必须按 comm 匹配。
-            listOf("_dsh_http.sh", "notify", "scr", "say", "psx", "killx").forEach { name ->
+            listOf("_dsh_http.sh", "notify", "scr", "say", "psx", "killx", "loop", "fast").forEach { name ->
                 val dst = File(bindir, name)
                 runCatching {
                     val text = ctx.assets.open("gates/$name").use { it.readBytes().toString(Charsets.UTF_8) }
@@ -802,12 +972,35 @@ object EngineConfig {
                     )
                 }.onFailure { Log.w(TAG, "agent gate $name deploy failed: ${it.message}") }
             }
-            listOf("notify", "scr", "say", "psx", "killx").forEach { File(bindir, it).setExecutable(true, false) }
+            // planner-daemon 已于 v1.2.167 移除（用户要求：AI 用自己的工具做无障碍）
+
+    // LAN 反向代理脚本（v1.2.160）：与 daemon 同一套部署方式（assets → tools）。
+    // 为什么用 node 而不是 app 内手写 HTTP 代理：chunked/压缩/Cookie/特殊 URL
+    // （plugins/??a.js,b.js）/WebSocket 升级，手写全都要自己处理 —— 实测反复出
+    // 问题（白屏 / 0 字节资源 / 满屏乱码）。node 的 http 模块天然处理这些。
+    runCatching {
+                val toolsDir = File(dshHome(ctx), "tools").apply { mkdirs() }
+                val src = ctx.assets.open("tools/lan-web-proxy.mjs").use { it.readBytes().toString(Charsets.UTF_8) }
+                val dst = File(toolsDir, "lan-web-proxy.mjs")
+                // 同插件：读不了就删掉重建（重装后 uid 变化导致 EACCES 的解法）
+                val stale = !dst.isFile ||
+                    runCatching { dst.readText() != src }.getOrDefault(true)
+                if (stale) {
+                    runCatching { dst.delete() }
+                    if (!dst.isFile || runCatching { dst.readText() }.getOrNull() != src) {
+                        dst.writeText(src)
+                    }
+                }
+                dst.setReadable(true, false)
+                dst.setReadable(true, true)
+    }.onFailure { Log.w(TAG, "lan-web-proxy deploy failed: ${it.message}") }
+
+            listOf("notify", "scr", "say", "psx", "killx", "loop", "fast").forEach { File(bindir, it).setExecutable(true, false) }
             File(bindir, "_dsh_http.sh").setReadable(true, false)
 
             // 部署后自检（v1.2.52）：逐个校验首行不含 \r 且指向存在的解释器。
             // 失败不静默——写进 engine.log 并给出明确原因，避免「看起来像文件丢了」的误判。
-            listOf("_dsh_http.sh", "notify", "scr", "say", "psx", "killx").forEach { name ->
+            listOf("_dsh_http.sh", "notify", "scr", "say", "psx", "killx", "loop", "fast").forEach { name ->
                 val f = File(bindir, name)
                 val head = runCatching {
                     f.inputStream().use { ins ->

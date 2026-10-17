@@ -36,3 +36,12 @@ _runtime_bak/
 _*.zstd
 _*.png
 _probe_*
+scripts/probes/testsite/*.apk
+scene_memory.json
+dist/
+_release_*.py
+node_modules/
+
+# dev probe artifacts
+scripts/probes/_parts/
+scripts/probes/*.bin

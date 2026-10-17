@@ -20,6 +20,7 @@ import app.dsh.mobile.engine.ExtensionManager
 import app.dsh.mobile.engine.PrivMode
 import app.dsh.mobile.engine.Privilege
 import app.dsh.mobile.engine.TtsManager
+import app.dsh.mobile.engine.LanWebProxy
 
 /**
  * 独立设置页（MIUI 分组卡片风格，替代原先的悬浮菜单）。
@@ -45,7 +46,11 @@ class SettingsActivity : Activity() {
 
     /** Shizuku 授权结果监听（requestPermission 异步回调后刷新状态行） */
     private val shizukuPermListener =
-        rikka.shizuku.Shizuku.OnRequestPermissionResultListener { _, _ ->
+        rikka.shizuku.Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            // v1.2.158：记住用户的选择——拒绝后不再自动弹窗（隐私）
+            if (requestCode == SHIZUKU_REQ) {
+                Privilege.markShizukuDenied(this, grantResult != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            }
             refreshShizuku()
         }
 
@@ -65,18 +70,79 @@ class SettingsActivity : Activity() {
 
         rikka.shizuku.Shizuku.addRequestPermissionResultListener(shizukuPermListener)
 
-        // —— 其他：试验性功能开关（v1.2.95，v1.2.96 接管悬浮窗）——
-        // 默认关闭；开启后悬浮窗实时出现（无障碍服务在位时），关闭即实时消失；
-        // 同时控制悬浮窗/麦克风权限/语音服务/本地识别应用四个入口的可见性。
-        val swExperimental = findViewById<android.widget.Switch>(R.id.swExperimental)
-        swExperimental.isChecked = prefs.getBoolean(KEY_EXPERIMENTAL, false)
-        applyExperimentalVisibility(swExperimental.isChecked)
-        swExperimental.setOnCheckedChangeListener { _, checked ->
-            getSharedPreferences(PREFS_UI, MODE_PRIVATE)
-                .edit().putBoolean(KEY_EXPERIMENTAL, checked).apply()
-            applyExperimentalVisibility(checked)
-            // 实时显隐悬浮窗（无障碍服务在位才有效；不在位时服务重连会按开关决定）
-            DshAccessibilityService.instance?.setOverlayEnabled(checked)
+        // —— 扩展：局域网访问 WebUI（v1.2.160/v1.2.161）——
+        // 独立端口 3090 的反向代理，让同网段设备用原生 WebUI 连上本机引擎。
+        // v1.2.161（用户要求）：验证码改为 **6 位数字 + 每次开启重新随机**，
+        // 生成后**自动复制到剪贴板**，且**只在应用内显示一次**（退出再进设置不显示）。
+        val swLan = findViewById<android.widget.Switch>(R.id.swLanWeb)
+        val lanSub = findViewById<android.widget.TextView>(R.id.lanWebSub)
+        // ⚠️ v1.2.162 实测修复（用户反馈"关闭时显示网址、开启时反而不显示"）：
+        // 旧实现用 LanWebProxy.isRunning() 判断 —— 但代理的启停都是**异步**的
+        // （拉起要 1-3s，停止要等进程回收）→ 点开关的瞬间读到的还是旧状态，
+        // 表现正好相反。改为**以开关自身的状态为准**（用户看到的就是他点的那个状态），
+        // 地址只在该状态为"开"时展示。
+        // v1.2.162（用户要求）：**行内不再保留验证码** —— 验证码只在开启时的
+        // 提示框里显示一次，避免长期驻留。行内只显示说明与访问地址。
+        fun lanSubText() {
+            val on = swLan.isChecked
+            val addr = "http://" + (LanWebProxy.lanAddress() ?: "?") + ":" + LanWebProxy.PORT
+            lanSub.text = if (!on) getString(R.string.setting_lan_web_sub)
+            else getString(R.string.setting_lan_web_sub) + "\n\n" + addr
+        }
+        /** 复制到剪贴板（6 位码，方便直接粘到电脑上） */
+        fun copyCode(code: String) {
+            runCatching {
+                val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("DSH LAN code", code))
+            }
+        }
+        swLan.isChecked = DshApp.lanWebEnabled(this)
+        // v1.2.162：验证码只在**刚生成时**用提示框展示一次（行内不再保留）。
+        val pendingShown = DshApp.lanWebPwPending(this)
+        if (pendingShown && DshApp.lanWebEnabled(this)) {
+            val c = DshApp.lanWebPassword(this)
+            runCatching {
+                LanAccessDialog.show(
+                    this, c,
+                    "http://" + (LanWebProxy.lanAddress() ?: "?") + ":" + LanWebProxy.PORT,
+                )
+            }
+            DshApp.markLanWebPwShown(this)   // 只显示一次
+        }
+        lanSubText()
+        swLan.setOnCheckedChangeListener { _, checked ->
+            if (checked) {
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.setting_lan_web)
+                    .setMessage(R.string.lan_web_consent)
+                    .setPositiveButton(android.R.string.ok) { _, _ ->
+                        DshApp.setLanWebEnabled(this, true)
+                        // 每次开启都重新生成 6 位验证码
+                        val code = DshApp.regenerateLanWebPassword(this)
+                        // v1.2.162（用户要求）：改用「提示框」展示 —— 验证码显著、可点复制；
+                        // 访问地址紧贴其下（小字、也可复制）；行内不再保留验证码。
+                        runCatching {
+                            LanAccessDialog.show(
+                                this, code,
+                                "http://" + (LanWebProxy.lanAddress() ?: "?") + ":" + LanWebProxy.PORT,
+                            )
+                        }
+                        lanSubText()
+                        DshApp.markLanWebPwShown(this)
+                        Thread({
+                            runCatching { LanWebProxy.start(code) }
+                                .onFailure { android.util.Log.w("Settings", "lan proxy: ${it.message}") }
+                        }, "lan-start").apply { isDaemon = true }.start()
+                    }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> swLan.isChecked = false }
+                    .setOnCancelListener { swLan.isChecked = false }
+                    .show()
+            } else {
+                DshApp.setLanWebEnabled(this, false)
+                Thread({ runCatching { LanWebProxy.stop() } }, "lan-stop").apply { isDaemon = true }.start()
+                lanSubText()
+            }
         }
 
         // —— 顶部返回 ——
@@ -424,9 +490,15 @@ class SettingsActivity : Activity() {
                 v.setTextColor(getColor(R.color.ds_success))
             }
             Privilege.shizukuServerRunning() -> {
+                // v1.2.158 隐私修复：这里**不再**自动请求（拒绝后回调又会回到此处 →
+                // 死循环弹窗）。改为展示状态 + 允许点击该行**显式**重新申请。
                 v.text = getString(R.string.setting_shizuku_request)
-                v.setTextColor(getColor(R.color.ds_warn))
-                Privilege.requestShizukuPermission(SHIZUKU_REQ)
+                v.setTextColor(0xFFFFB74D.toInt())
+                v.isClickable = true
+                v.setOnClickListener {
+                    Privilege.requestShizukuPermission(SHIZUKU_REQ, this@SettingsActivity, explicit = true)
+                }
+
             }
             else -> {
                 v.text = getString(R.string.setting_shizuku_absent)
@@ -640,7 +712,8 @@ class SettingsActivity : Activity() {
                             PrivMode.SHIZUKU -> {
                                 // server 在跑但未授权 → 先请求授权（弹 Shizuku 框）
                                 if (!Privilege.shizukuGranted()) {
-                                    Privilege.requestShizukuPermission(SHIZUKU_REQ)
+                                    // 用户主动选了 Shizuku 模式 = 显式请求（会重置"已拒绝"标记）
+                                    Privilege.requestShizukuPermission(SHIZUKU_REQ, this@SettingsActivity, explicit = true)
                                 }
                                 dismissPrivPick()
                                 applyModeAndRestart(PrivMode.SHIZUKU)
@@ -733,23 +806,6 @@ class SettingsActivity : Activity() {
             show()
         }
 
-    /**
-     * 试验性功能开关的可见性（v1.2.95）。
-     *
-     * 关闭（默认）时隐藏四行入口：悬浮窗（无障碍）、麦克风权限、语音服务、
-     * 本地识别应用 —— 主人要求这些属于试验性能力，默认不露出。
-     * 只隐藏入口，不改变功能本身（悬浮窗是否显示仍取决于无障碍服务开关）。
-     */
-    private fun applyExperimentalVisibility(on: Boolean) {
-        val v = if (on) android.view.View.VISIBLE else android.view.View.GONE
-        listOf(
-            R.id.rowAccess,        // 悬浮窗 / 无障碍服务
-            R.id.rowMic,           // 麦克风权限
-            R.id.rowVoiceService,  // 语音服务
-            R.id.rowAsrApps,       // 本地识别应用
-        ).forEach { findViewById<android.view.View>(it).visibility = v }
-    }
-
     private companion object {
         const val SHIZUKU_REQ = 4202
 
@@ -757,7 +813,8 @@ class SettingsActivity : Activity() {
         const val REQ_MIC = 4203
         const val PREFS_UI = DshApp.PREFS_UI
         const val KEY_PAGE_SCALE = "page_scale"
-        const val KEY_EXPERIMENTAL = DshApp.KEY_EXPERIMENTAL
+        const val KEY_LANDSCAPE = "landscape"
+        const val KEY_LAN_WEB = DshApp.KEY_LAN_WEB
 
         const val DEFAULT_PAGE_SCALE = 100
         /** 可选档位（v1.2.122）：只有非 100% 才调用 setInitialScale */

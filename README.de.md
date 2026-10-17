@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/android-build.yml/badge.svg)](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/android-build.yml)
 ![i18n](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/i18n-check.yml/badge.svg)
-![Release](https://img.shields.io/badge/release-v1.2.120-blue)
+![Release](https://img.shields.io/badge/release-v1.3.0-blue)
 ![Plattform](https://img.shields.io/badge/platform-Android%208.0%2B-green)
 ![Lizenz](https://img.shields.io/badge/license-MIT-brightgreen)
 
@@ -73,11 +73,30 @@ Fehlerhafte Plugin-Konfigurationen werden automatisch auf den letzten gesunden S
 **Erweiterungszentrum: Umgebungen per One Tap**
 Das integrierte Erweiterungszentrum bietet **19 Umgebungserweiterungen** — Python, Go, Rust, Clang, OpenJDK, Git, Ruby, PHP, Perl, Lua, SQLite, FFmpeg, ImageMagick, OpenSSH, ADB, Vim und mehr — per One Tap herunterladen (und auch wieder deinstallieren), mit rot/gelb/grün Zustandsverwaltung und live Fortschrittsbalken in der Zeile. Direktverbindung zu chinesischen Mirrors (TUNA → USTC → BFSU → Termux offiziell, mit automatischem Failover), automatische Auflösung des Abhängigkeitsabschlusses, SHA-256-Prüfung und atomares Veröffentlichen. Nach der Installation wird die Shebang-Interpreter-Kette automatisch repariert (`sh`/`env`, sowie absolute Auflösung von extension-übergreifendem `perl`/`python`), sodass Skripte wie `env python3` auch ohne PATH laufen. Jede Zeile bietet **⟳ Neu installieren** (überschreibender Neu-Download, der historische Teilinstallationen repariert); die Installationsprotokolle erfassen die Eintragsanzahl pro Paket und prüfen, ob alle deklarierten Executables vorhanden sind. Die `bin`-Abhängigkeiten aller 19 Erweiterungen werden von `scripts/audit-extension-closures.py` **auf ELF-Ebene auditiert** (jede `NEEDED`-Bibliothek muss vom Abhängigkeitsabschluss abgedeckt sein, sodass Lücken in den Upstream-Metadaten früh auffallen).
 
+**WebUI vom Computer öffnen (LAN)**
+Einstellungen → Erweiterungen → **LAN-WebUI-Zugriff**. Nach dem Aktivieren öffnet ein Browser im selben Netzwerk `http://<Handy-IP>:3090` und erhält die **native dsh-WebUI, die auf dem Handy läuft** — dieselbe Oberfläche, keine Nachbildung. Jedes Mal wird ein zufälliger **6-stelliger Code** erzeugt (in die Zwischenablage kopiert, einmal angezeigt), und eine dauerhafte Benachrichtigung mit **Stopp**-Schaltfläche bleibt in der Statusleiste; Stoppen beendet den Proxy-Prozess wirklich (auch im Normalmodus). Der Proxy patcht nur seine eigenen Antworten (Secure-Context-APIs, Loopback-Prüfungen, `/api`-Same-Origin, WebSocket-Upgrades) und ändert keine Engine-Dateien. Für Terminal oder Dateitransfer gibt es weiterhin SSH über die OpenSSH-Erweiterung. Siehe [docs/LAN_WEBUI.en.md](docs/LAN_WEBUI.en.md).
+
+**Community-Plugins per One Tap**
+Einstellungen → Erweiterungen → **Community-Plugins**: dsh-Ökosystem-Plugins auf npm suchen und mit einem Tipp installieren bzw. deinstallieren — komplett in der App. Ergebnisse werden auf Kompatibilität gefiltert, Installationen zeigen Fortschritt und Fehlergrund, und Plugins erscheinen sofort im Plugin-Panel der WebUI. Beide Stores ergänzen sich: **Plugins erweitern die Fähigkeiten des Agenten, Erweiterungen liefern die Kommandozeilenumgebung.**
+
 **Kompilieren auf dem Smartphone**
 Die Toolchains Clang / Go / Rust / Java / Ruby sind auf echten Geräten verifiziert: Kernel-Header (ndk-sysroot) sowie CPATH / LIBRARY_PATH / RUSTFLAGS / GOTMPDIR werden automatisch injiziert, sodass `clang hello.c -o hello && ./hello` einfach funktioniert; zusammen mit der namensbasierten Prozessverwaltung `psx`/`killx` und einem binärsicheren `curl` erledigt der Agent echte Entwicklungsarbeit auf dem Smartphone. **Parallele Dienste bleiben unter 400 MB Speicherbedarf.**
 
 **Agent erweitert sich selbst**
 Der Agent nutzt nicht nur das Erweiterungszentrum, sondern handelt eigenständig: Er installiert in einer Sitzung Umgebungen über die lokale Bridge und aktiviert sie automatisch (und erinnert dich anschließend daran, die Engine neu zu starten). Im Root-Modus hat er sich sogar die Android-SDK-Kommandozeilenwerkzeuge selbst installiert.
+
+## 📚 Funktionsdetails
+
+Zu jeder Fähigkeit gibt es ein eigenes Dokument (Design-Abwägungen, Messwerte, Fehlersuche):
+
+| Dokument | Inhalt |
+|---|---|
+| [Barrierefreiheit & Gerätesteuerung](docs/ACCESSIBILITY.en.md) | Lesen/Tippen/Eingeben/Wischen über 21 Primitive; mehrschichtige Vision, Verifikation pro Schritt; gemessen ~1,45 s/Schritt |
+| [Designnotizen zur geschlossenen Schleife](docs/LOCAL_CLOSED_LOOP.md) | Design und Entwicklung der Entscheidungs-Engine auf dem Gerät |
+| [UI-Plugins für schmale Bildschirme](docs/NARROW_UI.en.md) | Seitenleiste über volle Breite / Einstellungen neu angeordnet / rechtes Panel bildschirmfüllend |
+| [LAN-WebUI](docs/LAN_WEBUI.en.md) | Reverse-Proxy, 6-stelliger Code, dauerhafte Erinnerung und Stopp-Kette |
+| [Spracheingabe](docs/VOICE_INPUT.en.md) | zwei Erkennungskanäle, Sende-Deduplizierung, Panel-Parking, bekanntes Problem |
+| [Benachrichtigungen & Hintergrund](docs/NOTIFICATIONS.en.md) | KI-Fortschritt, Aufgabenende, LAN-Erinnerung, sauberes Beenden |
 
 ## ⛔ Grenzen (bitte beachten)
 
@@ -140,7 +159,7 @@ Normaler Modus ist der Standard; Optionen, deren Fähigkeit noch nicht bereitste
 
 ## 📦 Installation
 
-**Release herunterladen (empfohlen)**: Hol dir die APK von [Releases](https://github.com/Soodok/Deepseek-Harness-Local-Android/releases) (für Smartphones `arm64-v8a` wählen; aktuell **v1.2.120**), und installiere sie, nachdem du Installationen unbekannter Quellen erlaubt hast. Jede Version ab v1.0.0 lässt sich über die bestehende App installieren.
+**Release herunterladen (empfohlen)**: Hol dir die APK von [Releases](https://github.com/Soodok/Deepseek-Harness-Local-Android/releases) (für Smartphones `arm64-v8a` wählen; aktuell **v1.3.0**), und installiere sie, nachdem du Installationen unbekannter Quellen erlaubt hast. Jede Version ab v1.0.0 lässt sich über die bestehende App installieren.
 
 **Aus dem Quelltext bauen** (JDK 17 + Android SDK, NDK r26+, CMake 3.22.1):
 
@@ -158,7 +177,7 @@ Alternativ: Forke das Repository und lasse den Workflow **android-build** auf Gi
 1. Wähle beim ersten Start Anzeigeausrichtung und Berechtigungsmodus (im Zweifel **Normal**)
 2. Warte, bis die Laufzeit entpackt (mit echter Fortschrittsanzeige) und die Engine startet
 3. Starte ein Gespräch und gib dem Agenten Aufgaben; das Zahnradsymbol öffnet die Einstellungen; tippe auf jeden `127.0.0.1`-Link, den der Agent dir gibt, um sein Ergebnis anzusehen
-4. Spracheingabe und das schwebende Fenster liegen hinter Einstellungen → Andere → **Experimentelle Funktionen** (standardmäßig aus; bei Bedarf aktivieren)
+4. Spracheingabe und das schwebende Fenster sind immer verfügbar — kein Schalter nötig
 5. Damit der Agent den Bildschirm bedienen darf: aktiviere den Accessibility-Dienst **DSH Screen Tap** in den Systemeinstellungen (unter Android 13+ fragt das System „Vollständige Kontrolle über dein Gerät erlauben" — tippe auf **Allow**)
 
 ## ❓ FAQ

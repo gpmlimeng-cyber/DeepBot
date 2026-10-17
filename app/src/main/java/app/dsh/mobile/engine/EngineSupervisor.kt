@@ -104,6 +104,34 @@ class EngineSupervisor(private val ctx: Context) {
      * 重新启动（重启按钮 / 权限模式切换等显式动作）会清掉该状态。
      */
     fun isUserStopped(): Boolean = userStop && (loopJob?.isActive != true)
+
+    /**
+     * 用户**从通知栏点「退出」**时的回调（v1.2.187，v1.2.188 审查后改为回调式）。
+     *
+     * 由 MainActivity 在 onCreate 注册、onDestroy 注销。收到回调时它负责
+     * `finishAndRemoveTask()` —— 销毁 WebView、释放 ~380MB。
+     *
+     * ## 为什么不用「标记位」而是回调
+     * 标记位必须在某个时刻清零，否则用户**下次打开 App 会被立刻关掉**
+     * （审查发现 P0：explicitExit 只有 start() 会清零，而 start() 被
+     * `isUserStopped()` 拦住永不执行）。回调方式天然满足"只对本次退出生效"：
+     * Activity 不在（已被系统回收）时回调为 null → 什么也不做，也不留残留状态。
+     */
+    @Volatile var onExplicitExit: (() -> Unit)? = null
+
+    /** 派发显式退出回调到主线程（任何线程调用都安全）。 */
+    private fun dispatchExplicitExit() {
+        val cb = onExplicitExit
+        if (cb == null) {
+            Log.i(TAG, "explicit exit: no live Activity to finish (nothing to release)")
+            return
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            runCatching { cb() }
+                .onFailure { Log.w(TAG, "explicit exit callback failed: ${it.message}") }
+        }
+    }
+
     /** 重启互斥：重复点击重启按钮是 no-op（并发 stop/start 会互相踩踏，实测事故） */
     @Volatile private var restarting = false
     /** 用户重启的起点时间戳（healthy 时打印总耗时，用于定位「重启很久」这类反馈） */
@@ -117,12 +145,23 @@ class EngineSupervisor(private val ctx: Context) {
         loopJob = scope.launch(Dispatchers.Default) { supervisionLoop() }
     }
 
-    fun stop(graceMs: Long = 10_000) {
+    /**
+     * 停止引擎。
+     * @param graceMs 优雅退出等待上限。
+     * @param explicit true = 用户在通知栏点了「退出」（会结束主界面并销毁 WebView
+     *                 以释放内存）；false = 服务销毁等被动停止。
+     */
+    fun stop(graceMs: Long = 10_000, explicit: Boolean = false) {
         userStop = true
         loopJob?.cancel()
         process?.stop(graceMs)
         process = null
+        // v1.2.188（审查 P2）：stop() 只 cancel 不 join 监督循环 —— 若恰好在
+        // spawnEngine() 的阻塞段里，已 fork 的 node 可能没有引用、无人 stop。
+        // 这里补一次孤儿清理（端口占用检测 + 同 uid pkill），覆盖该窗口。
+        runCatching { cleanupOrphanEngine() }
         _state.value = State.Stopped
+        if (explicit) dispatchExplicitExit()
     }
 
     /**
@@ -391,6 +430,9 @@ class EngineSupervisor(private val ctx: Context) {
                 ctx.getString(R.string.error_root_no_su)
             )
         }
+        // v1.2.159：启动前自愈 engine/bin 的 Termux shebang（真机 37 个 wrapper 指向不存在的
+        // 路径 → getprop/logcat/node 直接崩）。幂等，仅改第一行。
+        runCatching { EngineConfig.healTermuxShebangs(ctx) }
         return EngineProcess.spawn(
             nodeBin = EngineConfig.nodeBin(ctx),
             entryJs = EngineConfig.dshEntry(ctx),

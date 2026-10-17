@@ -45,15 +45,65 @@ class DshApp : Application() {
     }
 
     companion object {
-        /** 设置页 UI 偏好（页面缩放/横竖屏/试验性功能），与 SettingsActivity 共用 */
+        /** 设置页 UI 偏好（页面缩放/横竖屏），与 SettingsActivity 共用 */
         const val PREFS_UI = "dsh_ui"
 
-        /** 试验性功能开关（v1.2.95）：默认关闭，关闭时悬浮窗与相关设置入口都不出现 */
-        const val KEY_EXPERIMENTAL = "experimental"
+        /**
+         * max+ 的模型来源（v1.2.127）：选中的凭证记录键名（如 DEEPSEEK_API_KEY）。
+         * 空串 = 未显式选择（按 CredentialProbe.defaultRef 兜底：优先 DeepSeek 官方）。
+         */
+        const val KEY_A11Y_MAX_PROVIDER = "a11y_max_provider"
 
-        /** 读取试验性开关（Activity/Service 通用；无 Context 依赖的静态读法） */
-        fun experimentalOn(context: android.content.Context): Boolean =
+        fun a11yMaxProvider(context: android.content.Context): String =
             context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
-                .getBoolean(KEY_EXPERIMENTAL, false)
+                .getString(KEY_A11Y_MAX_PROVIDER, "") ?: ""
+
+        /** 局域网访问 WebUI（v1.2.160）：让同网段设备用原生界面连上本机引擎。默认关闭。 */
+        const val KEY_LAN_WEB = "lan_web_access"
+        private const val KEY_LAN_WEB_PW = "lan_web_password"
+        /** 验证码是否处于"待展示"状态（只显示一次，再进设置不再显示） */
+        private const val KEY_LAN_WEB_PW_PENDING = "lan_web_pw_pending"
+
+        fun lanWebEnabled(context: android.content.Context): Boolean =
+            context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
+                .getBoolean(KEY_LAN_WEB, false)
+
+        fun setLanWebEnabled(context: android.content.Context, on: Boolean) {
+            context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_LAN_WEB, on).apply()
+        }
+
+        /** 访问密码：首次生成后固定（8 位十六进制） */
+        fun lanWebPassword(context: android.content.Context): String {
+            val prefs = context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
+            val cur = prefs.getString(KEY_LAN_WEB_PW, "") ?: ""
+            if (cur.length >= 6) return cur
+            return regenerateLanWebPassword(context)
+        }
+
+        /**
+         * 生成新的 6 位数字验证码（v1.2.161，用户要求）。
+         * 每次「开启局域网访问」都重新生成 —— 不复用旧码，避免长期有效的固定口令。
+         */
+        fun regenerateLanWebPassword(context: android.content.Context): String {
+            val prefs = context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
+            val pw = (1..6).map { "0123456789".random() }.joinToString("")
+            // 同时标记"待展示"：新码生成后应在设置页显示一次（并自动复制）
+            prefs.edit().putString(KEY_LAN_WEB_PW, pw)
+                .putBoolean(KEY_LAN_WEB_PW_PENDING, true).apply()
+            return pw
+        }
+
+        /** 是否还需要在设置页显示验证码：只在"刚生成、还没展示过"时为真（只显示一次） */
+        fun lanWebPwPending(context: android.content.Context): Boolean =
+            context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
+                .getBoolean(KEY_LAN_WEB_PW_PENDING, false)
+
+        fun markLanWebPwShown(context: android.content.Context) {
+            context.getSharedPreferences(PREFS_UI, android.content.Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_LAN_WEB_PW_PENDING, false).apply()
+        }
+
+
     }
 }

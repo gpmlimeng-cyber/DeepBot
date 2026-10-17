@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- APK 型扩展（扩展中心）触发系统安装器（v1.2.127，如 dsh-asr-service） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- Android 14+ 要求前台服务声明类型；specialUse 类型不会被系统限时强杀（dataSync 6h 上限的规避） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -12,6 +14,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 语音输入开/关的触感反馈（v1.2.73）：无此权限时 Vibrator 调用被静默忽略 -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- v1.2.161：验证码提示条用普通浮层通道（无障碍不在位时也能显示） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- 所有文件访问：普通模式下授权 AI 在共享存储（/sdcard）建目录与读写 ——
          权限中心跳系统设置授予（isExternalStorageManager），引擎进程与 App 同 uid 继承 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
@@ -44,6 +48,17 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Dsh"
         android:allowBackup="false">
+
+        <!-- v1.2.188：局域网 WebUI「已开启」常驻通知里的关闭按钮。
+             exported=false：只接受本应用 PendingIntent 发出的广播，
+             不暴露给其它应用。 -->
+        <receiver
+            android:name=".LanWebOffReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.dsh.mobile.action.LAN_WEB_OFF" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".MainActivity"

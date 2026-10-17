@@ -69,6 +69,15 @@ class ExtensionManager(private val ctx: Context) {
          * 与 deb 走同一条 SHA-256 校验链路。空 = 该扩展不需要额外构件。
          */
         val artifacts: List<Artifact> = emptyList(),
+        /**
+         * APK 型扩展（v1.2.127）：非 Termux 包，而是**独立 Android 应用**的 APK。
+         * 安装流程 = 下载 + SHA-256 校验 + PackageInstaller 触发系统安装器
+         * （用户点「安装」确认——Android 侧无法静默装第三方 App）。
+         * state 检测按 [apkPackage] 的包名是否已装判断。
+         */
+        val apkUrl: String = "",
+        val apkSha256: String = "",
+        val apkPackage: String = "",
     )
 
     /** 额外构件：url 下载到扩展内 dest，sha256 强校验（非空时） */
@@ -158,6 +167,11 @@ class ExtensionManager(private val ctx: Context) {
             fun rep(p: Float?, s: String) {
                 report(p, s)
                 updateTask(ext.id) { it.copy(progress = p ?: it.progress, stage = s.ifEmpty { it.stage }) }
+            }
+            // ── APK 型扩展分支（v1.2.127）：下载 + 校验 + PackageInstaller ──
+            if (ext.apkUrl.isNotBlank()) {
+                installApkTask(ext, ext.apkUrl, ext.apkSha256) { p, s -> rep(p, s) }
+                return
             }
             // 阶段 1：网络下载（可并发，每扩展独立 cacheDir）—— 0~0.95
             val permit = dlSemaphore.acquire()
@@ -257,6 +271,9 @@ class ExtensionManager(private val ctx: Context) {
         return if (lang == "zh") "extensions/catalog.zh-rCN.json" else "extensions/catalog.json"
     }
 
+    private fun catalogById(id: String): Extension? =
+        runCatching { loadCatalog().firstOrNull { it.id == id } }.getOrNull()
+
     fun loadCatalog(): List<Extension> {
         val raw = ctx.assets.open(catalogAsset()).bufferedReader().use { it.readText() }
         val root = JSONObject(raw)
@@ -301,6 +318,15 @@ class ExtensionManager(private val ctx: Context) {
     // ================= 三态 =================
 
     fun state(id: String): ExtState {
+        // APK 型扩展（v1.2.127）：按 apkPackage 是否已装判断（不走扩展目录）
+        val ext = catalogById(id)
+        if (ext != null && ext.apkUrl.isNotBlank()) {
+            val pkg = ext.apkPackage
+            val installed = runCatching {
+                ctx.packageManager.getInstalledPackages(0).any { it.packageName == pkg }
+            }.getOrDefault(false)
+            return if (installed) ExtState.ACTIVATED else ExtState.NOT_DOWNLOADED
+        }
         val installed = markerOf(id).isFile
         if (!installed) {
             if (prefs.getBoolean(keyActivated(id), false)) {
@@ -466,6 +492,89 @@ class ExtensionManager(private val ctx: Context) {
 
     /** 阶段 2：解包 → 拍平 usr/ → 可执行位 → 版本标记 → rename 原子发布 → 链接落地。
      *  只操作本扩展自己的 tmp/final 目录；调用方（installTask）需持该扩展的分锁。 */
+    /**
+     * APK 型扩展安装（v1.2.127）：下载 APK → SHA-256 强校验 → PackageInstaller
+     * 触发系统安装器。**用户必须在系统弹窗里点「安装」**（第三方 App 无法静默装），
+     * 点完后 state() 按包名检测为 green。下载进度 0~0.95，安装确认 0.95~1。
+     */
+    private suspend fun installApkTask(
+        ext: Extension, apkUrl: String, apkSha256: String,
+        report: (Float?, String) -> Unit,
+    ) {
+        val cacheDir = File(ctx.cacheDir, "ext-${ext.id}").apply { mkdirs() }
+        val apkFile = File(cacheDir, "${ext.id}.apk")
+        // 下载（GitHub release 直连；404/断点由调用方上层统一报错）
+        report(0f, "Downloading APK…")
+        val req = urllibRequest(apkUrl)
+        java.net.HttpURLConnection.setFollowRedirects(true)
+        val conn = (req.url.openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 15_000; readTimeout = 60_000
+            instanceFollowRedirects = true
+        }
+        conn.connect()
+        val total = conn.contentLengthLong.coerceAtLeast(1)
+        var done = 0L
+        conn.inputStream.use { ins ->
+            apkFile.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    done += n
+                    report((done.toDouble() / total * 0.95f).toFloat(), "")
+                }
+            }
+        }
+        // SHA-256 强校验（与 deb 同链路）
+        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(apkFile.readBytes())
+            .joinToString("") { b -> "%02x".format(b) }
+        check(apkSha256.isBlank() || sha == apkSha256.lowercase()) {
+            "APK SHA-256 mismatch (expected $apkSha256, got $sha)"
+        }
+        report(0.95f, "Waiting for user install…")
+        // PackageInstaller：session 写入 → commit → 系统弹安装确认
+        val pi = ctx.packageManager.packageInstaller
+        val params = android.content.pm.PackageInstaller.SessionParams(
+            android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        val sessionId = pi.createSession(params)
+        pi.openSession(sessionId).use { session ->
+            session.openWrite("base.apk", 0, apkFile.length()).use { out ->
+                apkFile.inputStream().use { it.copyTo(out) }
+                session.fsync(out)
+            }
+            // commit 需要 IntentSender：结果回调到 App 自身（启动/完成画面均可）
+            val callback = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+                ?: android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                    addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                }
+            callback.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            val pending = android.app.PendingIntent.getActivity(ctx, sessionId, callback,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+            session.commit(pending.intentSender)
+        }
+        Log.i(TAG, "installApk ${ext.id}: session committed, waiting for user confirmation")
+        // 轮询包名（用户点完「安装」后变 green；最长 10 分钟）
+        val pkg = ext.apkPackage
+        val deadline = System.currentTimeMillis() + 600_000L
+        while (System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(3000)
+            val installed = runCatching {
+                ctx.packageManager.getInstalledPackages(0)
+                    .any { it.packageName == pkg }
+            }.getOrDefault(false)
+            if (installed) {
+                report(1f, "Installed")
+                updateTask(ext.id) { it.copy(state = TaskState.DONE, progress = 1f, stage = "Installed") }
+                Log.i(TAG, "installApk ${ext.id}: package $pkg installed")
+                return
+            }
+        }
+        throw IllegalStateException("APK install not confirmed within 10 min (user cancelled?)")
+    }
+
+    private fun urllibRequest(url: String) = java.net.URL(url).openConnection()
+
     private fun installPhase(ext: Extension, dl: DownloadedDebs, report: (Float?, String) -> Unit) {
         val finalDir = dirOf(ext.id)
         val tmpDir = File(extRoot, "${ext.id}.tmp-install")

@@ -43,7 +43,9 @@ object StatusOverlay {
      * 是个**椭圆**且触摸只认中间那个点，所以看起来「像个按钮」（主人实测反馈）。
      * 44dp：够大能点准（远超 40dp 的最小触摸目标），又不至于占屏。
      */
-    private const val COLLAPSED_BALL_DP = 44
+    // v1.2.157 用户反馈：44dp 的球在展开成面板时"旁边延展、整体内缩"（球比面板高）。
+    // 改为 26dp 紧凑圆点：展开后是自然的变大，观感平滑；中间状态点大小不变（DOT_DP）。
+    private const val COLLAPSED_BALL_DP = 26
 
     /**
      * 状态点直径（dp）—— **折叠态与展开态用同一个值**。
@@ -431,6 +433,14 @@ object StatusOverlay {
             // 手柄必须绑在当前可见的那个上（否则点击落空 —— 实测踩坑）。
             bindHandle(v, params ?: return@let, ctx)
 
+            // v1.2.157：详情档显示「退出 daemon」按钮（有活跃任务才可见，轮询控制）
+            if (expandLevel >= 2) {
+                ensureDaemonButton(ctx)
+            } else {
+                cancelDaemonPoll()
+                daemonBtn?.visibility = View.GONE
+            }
+
             // ⚠️ 必须请求重新布局：改 visibility 不会自动重新测量，
             // 新显示的控件会保持 [0,0,0,0]（尺寸为 0 → 收不到触摸）。
             // 实测：level 1 时 status/mic 都是 vis=0 但 [0,0,0,0]，点麦克风完全无响应。
@@ -510,6 +520,77 @@ object StatusOverlay {
         mainHandler.postDelayed(r, 3_000L)
     }
 
+    // ---------- daemon 控制按钮（v1.2.157 用户反馈：daemon 卡住时用户无法主动取消）----------
+    /** 详情档的「退出 daemon」按钮：有活跃/待帮助任务才显示，点击即 /daemon/stop */
+    @Volatile private var daemonBtn: android.widget.Button? = null
+    @Volatile private var daemonPoll: Runnable? = null
+
+    private fun ensureDaemonButton(ctx: Context) {
+        val v = root ?: return
+        if (daemonBtn == null) {
+            val b = android.widget.Button(ctx)
+            b.text = ctx.getString(R.string.overlay_exit_daemon)
+            b.textSize = 11f
+            b.setPadding(dp(ctx, 8), dp(ctx, 2), dp(ctx, 8), dp(ctx, 2))
+            b.setOnClickListener {
+                daemonBtn?.visibility = View.GONE
+                Thread {
+                    runCatching {
+                        val tok = app.dsh.mobile.engine.AgentBridge.currentToken() ?: return@Thread
+                        val c = (java.net.URL("http://127.0.0.1:3083/daemon/stop")
+                            .openConnection() as java.net.HttpURLConnection).apply {
+                            requestMethod = "POST"
+                            setRequestProperty("X-DSH-Token", tok)
+                            connectTimeout = 3000; readTimeout = 3000
+                        }
+                        c.inputStream.close()
+                    }
+                }.apply { isDaemon = true }.start()
+            }
+            daemonBtn = b
+            (v as? android.widget.LinearLayout)?.addView(b)
+        }
+        // v1.2.159 修 bug（用户反馈：daemon 不在活动时按钮也亮着）：
+        // 此前这里**立即置 VISIBLE**，而轮询线程在拿不到 token 时会提前 return、
+        // 从不回写可见性 → 按钮永久亮着。现在：先隐藏，只由轮询结果决定显隐。
+        daemonBtn?.visibility = View.GONE
+        scheduleDaemonPoll()
+    }
+
+    private fun cancelDaemonPoll() {
+        daemonPoll?.let { runCatching { mainHandler.removeCallbacks(it) } }
+        daemonPoll = null
+    }
+
+    /** 每 2 秒问一次桥：daemon 有没有在跑任务 → 控制按钮显隐 */
+    private fun scheduleDaemonPoll() {
+        cancelDaemonPoll()
+        val r = Runnable {
+            daemonPoll = null
+            val b = daemonBtn ?: return@Runnable
+            Thread {
+                val active = runCatching {
+                    val tok = app.dsh.mobile.engine.AgentBridge.currentToken()
+                    if (tok == null) false else {
+                        val c = (java.net.URL("http://127.0.0.1:3083/daemon/status")
+                        .openConnection() as java.net.HttpURLConnection).apply {
+                        setRequestProperty("X-DSH-Token", tok)
+                        connectTimeout = 2000; readTimeout = 2000
+                    }
+                        val body = c.inputStream.bufferedReader().readText()
+                        org.json.JSONObject(body).optBoolean("active", false)
+                    }
+                }.getOrDefault(false)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    if (expandLevel >= 2) b.visibility = if (active) View.VISIBLE else View.GONE
+                    if (expandLevel >= 2) scheduleDaemonPoll()
+                }
+            }.apply { isDaemon = true }.start()
+        }
+        daemonPoll = r
+        mainHandler.postDelayed(r, 2_000L)
+    }
+
     fun hide(svc: AccessibilityService?) {
         main {
             val r = root ?: return@main
@@ -522,13 +603,67 @@ object StatusOverlay {
         }
     }
 
+    /**
+     * 引擎退出时的彻底清理（v1.2.157，用户实测反馈修复）：
+     * 退出引擎后悬浮窗仍在后台——球还挂着、`listRefresh` 每 3 秒继续读会话列表
+     * （引擎已死 → 每次都失败重试）、`idleReset` 定时器也在排着 → 进程持续活跃耗电。
+     * 这里一次清干净：停周期刷新、取消回空闲、移除窗口视图、状态复位。
+     */
+    fun teardown(svc: AccessibilityService?) {
+        main {
+            stopListRefresh()
+            cancelIdleReset()
+            working = false
+            expandLevel = 0
+            autoExpanded = false
+            cancelDaemonPoll()
+            runCatching { daemonBtn?.let { (root as? android.widget.LinearLayout)?.removeView(it) } }
+            daemonBtn = null
+            hide(svc)
+            Log.i(TAG, "overlay torn down (engine exited)")
+        }
+    }
+
     /** 用户隐藏后重新允许显示（引擎重启等场景调用） */
     fun resetHidden() { hidden = false }
+
+    // ---------- 截图避让（v1.2.164，用户反馈"截图会带上悬浮窗，遮挡 AI 视野"）----------
+    // ⚠️ 实现选择：**不能**用 hide()/show() —— 那两个会 removeView + 完整重建视图
+    // （见 hide 的 root=null 与 show 的 inflate），而截图在有帧差检测时要每秒采几十帧
+    // → 球会疯狂闪烁 + 大量 GC。改用**透明度归零**：视图保留在窗口里，只是不可见，
+    // 截图拿到的就是干净画面，恢复时一次赋值即可，零重建。
+    @Volatile private var hiddenForCapture = false
+
+    /** 为截图临时隐藏（alpha=0，不销毁视图） */
+    fun beginCaptureAvoid(svc: AccessibilityService?) {
+        main {
+            val r = root ?: return@main
+            if (hiddenForCapture) return@main
+            hiddenForCapture = true
+            r.alpha = 0f
+        }
+        // 给渲染管线一帧时间（alpha 生效后再截，否则可能截到半透明残影）
+        Thread.sleep(35L)
+    }
+
+    /** 截图完成后恢复可见 */
+    fun endCaptureAvoid(svc: AccessibilityService?) {
+        main {
+            if (!hiddenForCapture) return@main
+            hiddenForCapture = false
+            root?.alpha = 1f
+        }
+    }
+
+
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** 待执行的「回空闲」任务（必须可取消，见 scheduleIdle 注释） */
     @Volatile private var idleReset: Runnable? = null
+
+    /** 待执行的「平滑收起」任务（v1.2.185，见 setIdle 注释） */
+    @Volatile private var collapsePending: Runnable? = null
 
     /**
      * 取消待执行的「回空闲」。
@@ -542,6 +677,9 @@ object StatusOverlay {
     private fun cancelIdleReset() {
         idleReset?.let { runCatching { mainHandler.removeCallbacks(it) } }
         idleReset = null
+        // v1.2.185：新状态到来时，取消尚未执行的「平滑收起」——
+        // 否则刚排队的收起会在新任务开始后把悬浮窗缩掉。
+        cancelCollapse()
     }
 
     /**
@@ -588,6 +726,21 @@ object StatusOverlay {
      * v1.2.67：展开态（档位 ≥1）就显示 —— 主人要求「能看到 AI 正在干什么」，
      * 之前只有档位 2 才显示，等于要点两下才看得到最近动作。
      */
+    /**
+     * daemon（后台任务）执行进度（v1.2.159，用户反馈"daemon 在跑但无障碍里看不到在干什么"）。
+     * 由 LocalLoopExecutor 每步调用：状态行显示「执行中」，动作行显示当前那一步在做什么。
+     */
+    fun setDaemonAction(text: String) {
+        // v1.2.188（审查 P2）：daemon 新动作到达 → 取消待执行的"平滑收起"，
+        // 否则 60ms 窗口内会被 setIdle 的收尾覆盖成"空闲"。
+        cancelIdleReset()
+        main {
+            working = true
+            actionText?.text = text
+            refreshActionVisibility()
+        }
+    }
+
     fun setAction(text: String) {
         main {
             cancelIdleReset()
@@ -599,21 +752,68 @@ object StatusOverlay {
         }
     }
 
-    /** 回到空闲态（灰色点 + 空闲文案） */
+    /**
+     * 回到空闲态（灰色点 + 空闲文案）。
+     *
+     * ⚠️ v1.2.185（用户反馈「发送之后语音悬浮框收起时会闪一两下」）：
+     * 收起 = **悬浮窗尺寸变化**（展开卡片 → 圆形球：文字/动作行隐藏、padding、
+     * minWidth/Height、背景全变），而 View 属性动画管不到窗口尺寸，直接改会在
+     * 1~2 帧里看到整体跳变。
+     *
+     * 处理：把**所有**会改变尺寸的改动（文案、动作行、档位）都挪到 alpha=0 期间，
+     * 再淡入。并延迟 60ms 避开语音面板移除那一帧（两个 overlay 窗口同时重排时
+     * 闪得更明显）。延迟期间若已有新任务/新状态，[cancelCollapse] 会取消这次收起。
+     */
     fun setIdle() {
         main {
-            statusText?.text = appCtx?.getString(R.string.overlay_idle) ?: "Idle"
-            statusDot?.background?.setTint(COLOR_IDLE)
-            // 空闲 = 没有「正在干什么」：动作行收起（文字保留，下次干活时还能看到最近一次）
-            working = false
-            refreshActionVisibility()
-            // 只收回「因干活自动展开」的那一次；用户手动展开的档位不擅自动
-            if (autoExpanded) {
-                autoExpanded = false
-                expandLevel = 0
-                applyExpandLevel()
+            val r = root
+            val needFade = autoExpanded && r != null && expandLevel > 0
+
+            /** 真正的空闲布局（调用时必须处于 alpha=0 或本来就不需要淡出）。 */
+            fun applyIdleNow() {
+                statusText?.text = appCtx?.getString(R.string.overlay_idle) ?: "Idle"
+                statusDot?.background?.setTint(COLOR_IDLE)
+                working = false
+                refreshActionVisibility()
+                if (autoExpanded) {
+                    autoExpanded = false
+                    expandLevel = 0
+                    applyExpandLevel()
+                }
             }
+
+            if (!needFade) {
+                applyIdleNow()
+                return@main
+            }
+
+            // 立刻标记，避免重复排队；真正的布局改动在淡出后执行
+            autoExpanded = false
+            cancelCollapse()
+            val job = Runnable {
+                collapsePending = null
+                val view = root ?: return@Runnable
+                view.animate().cancel()
+                view.animate().alpha(0f).setDuration(80L).withEndAction {
+                    // 此刻不可见 → 安全地改尺寸
+                    statusText?.text = appCtx?.getString(R.string.overlay_idle) ?: "Idle"
+                    statusDot?.background?.setTint(COLOR_IDLE)
+                    working = false
+                    refreshActionVisibility()
+                    expandLevel = 0
+                    applyExpandLevel()
+                    view.animate().alpha(1f).setDuration(140L).start()
+                }.start()
+            }
+            collapsePending = job
+            mainHandler.postDelayed(job, 60L)
         }
+    }
+
+    /** 取消待执行的「平滑收起」（任何新状态都应调用） */
+    private fun cancelCollapse() {
+        collapsePending?.let { runCatching { mainHandler.removeCallbacks(it) } }
+        collapsePending = null
     }
 
     /**

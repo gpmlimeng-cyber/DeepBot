@@ -10,6 +10,7 @@ import android.util.Log
 import app.dsh.mobile.DshAccessibilityService
 import app.dsh.mobile.R
 import app.dsh.mobile.StatusOverlay
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
@@ -140,6 +141,8 @@ object AgentBridge {
     fun start(ctx: Context) {
         if (server != null) return
         shotCtx = ctx.applicationContext
+        // v1.2.160：LAN 代理需要 app context 推导引擎目录（部署脚本 / 拉起 node 进程）
+        runCatching { LanWebProxy.setContext(ctx) }
         // 桥 token（v1.2.99）：每次启动随机生成，只通过环境变量交给引擎内的 Agent。
         // 同设备第三方 App 拿不到 → 无法调用读屏/点击/通知等能力。
         ensureToken(ctx)
@@ -344,13 +347,38 @@ object AgentBridge {
     }
 
     private fun route(ctx: Context, method: String, path: String, query: String, body: String): Pair<Int, String> {
+        // v1.2.182（用户需求）：AI 进行「一大串」无障碍操作时发一条系统通知，
+        // 让用户随时知道它真的在干活（而不是界面自己变来变去像 bug）。
+        // 只统计**动作类**端点（点击/输入/滑动/按键/启动…），读屏类不计入 ——
+        // 否则每看一眼屏幕都算一步，通知会烦人。
+        if (method == "POST" && path in A11Y_ACTION_PATHS) noteA11yOperation(ctx, path)
         return when {
             method == "POST" && path == "/notify" -> notify(ctx, body)
             method == "GET" && path == "/screen" -> screen(query)
+            method == "GET" && path == "/ocr" -> ocr(query)
             method == "GET" && path == "/screen-changed" -> screenChanged()
             method == "POST" && path == "/pick" -> pick(body)
             method == "GET" && path == "/local/status" -> localStatus(ctx)
+            method == "GET" && path == "/frame-diff" -> frameDiff()
+            method == "POST" && path == "/frame-wait" -> frameWait(body)
+            method == "POST" && path == "/loop/run" -> loopRun(ctx, body)
+            method == "POST" && path == "/vision/crop" -> visionCrop(ctx, body)
+            method == "POST" && path == "/vision/track" -> visionTrack(ctx, body)
+            method == "POST" && path == "/vision/tap" -> visionTap(ctx, body)
+            method == "POST" && path == "/vision/drag" -> visionDrag(ctx, body)
+            method == "GET" && path == "/vision/list" -> visionList(ctx)
+            method == "GET" && path == "/memory/list" -> 200 to SceneMemory.listJson(ctx)
+            method == "GET" && path == "/memory/stats" -> 200 to JSONObject().put("ok", true).put("summary", SceneMemory.stats(ctx)).toString()
+            method == "POST" && path == "/memory/lookup" -> memoryLookup(ctx, body)
+            method == "POST" && path == "/memory/store" -> memoryStore(ctx, body)
+            method == "POST" && path == "/memory/confirm" -> memoryConfirm(ctx, body)
+            method == "POST" && path == "/memory/clear" -> {
+                SceneMemory.clear(ctx)
+                200 to """{"ok":true,"cleared":true}"""
+            }
             method == "POST" && path == "/local/ensure" -> localEnsure(ctx)
+            method == "GET" && path == "/daemon/status" -> daemonStatus()
+            method == "POST" && path == "/daemon/stop" -> daemonStop()
             method == "POST" && path == "/tap" -> tap(body)
             method == "GET" && path == "/screenshot" -> screenshot(query)
             method == "POST" && path == "/gesture" -> gesture(body)
@@ -365,6 +393,11 @@ object AgentBridge {
             method == "GET" && path == "/interference" -> interference(query)
             method == "POST" && path == "/overlay" -> overlay(body)
             method == "POST" && path == "/launch" -> launch(ctx, body)
+            method == "POST" && path == "/launch-intent" -> launchIntent(ctx, body)
+            method == "POST" && path == "/tap-id" -> tapId(body)
+            method == "POST" && path == "/wait-text" -> waitText(body)
+            method == "POST" && path == "/scroll-edge" -> scrollEdge(body)
+            method == "GET" && path == "/notif" -> notif()
             method == "GET" && path == "/ext/list" -> extList(ctx)
             method == "GET" && path == "/plugin/list" -> pluginList()
             method == "POST" && path == "/plugin/install" -> pluginInstall(body)
@@ -590,6 +623,136 @@ document.getElementById('api').textContent = checks.map(function(c){
         return 202 to """{"ok":true,"state":"installing","message":"download started; poll GET /ext/list until state=green, then remind user to restart engine"}"""
     }
 
+    // ---------- v1.2.182：长串无障碍操作的系统通知 ----------
+
+    /** 计入「AI 在操作设备」的动作类端点（读屏/查询类不计）。 */
+    private val A11Y_ACTION_PATHS = setOf(
+        "/tap", "/tap-id", "/gesture", "/key", "/input",
+        "/scroll-find", "/scroll-center", "/scroll-edge",
+        "/launch", "/launch-intent", "/vision/tap", "/vision/drag",
+        "/loop/run",
+    )
+
+    /** 连续操作够几步才提示（太少会打扰，太多用户又看不到过程）。 */
+    private const val A11Y_NOTIF_THRESHOLD = 3
+    /** 序列粘性窗口：超过这么久没动作就视为新序列。 */
+    private const val A11Y_NOTIF_WINDOW_MS = 30_000L
+    /** 最后一次动作后多久自动撤掉通知。 */
+    private const val A11Y_NOTIF_IDLE_MS = 10_000L
+    /** 固定的通知 id：每次更新同一条，不刷屏。 */
+    private const val A11Y_NOTIF_ID = 0x0A11
+
+    @Volatile private var a11ySeqCount = 0
+    @Volatile private var a11ySeqLastAt = 0L
+    private val a11yNotifHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var a11yNotifIdle: Runnable? = null
+
+    /**
+     * 动作标签（通知正文里给人类看的那半句）。
+     *
+     * 走字符串资源而不是内联中文：项目自带 i18n 门禁（scripts/check-i18n.py）
+     * 禁止 Kotlin 字面量里出现 CJK，中英两套 locale 必须同步。
+     */
+    private fun a11yOpLabel(ctx: Context, path: String): String = when (path) {
+        "/tap", "/tap-id", "/vision/tap" -> ctx.getString(R.string.notif_a11y_op_tap)
+        "/gesture", "/vision/drag" -> ctx.getString(R.string.notif_a11y_op_swipe)
+        "/scroll-find", "/scroll-center", "/scroll-edge" -> ctx.getString(R.string.notif_a11y_op_scroll)
+        "/input" -> ctx.getString(R.string.notif_a11y_op_input)
+        "/key" -> ctx.getString(R.string.notif_a11y_op_key)
+        "/launch", "/launch-intent" -> ctx.getString(R.string.notif_a11y_op_launch)
+        "/loop/run" -> ctx.getString(R.string.notif_a11y_op_loop)
+        else -> ctx.getString(R.string.notif_a11y_op_other)
+    }
+
+    /**
+     * 记录一次无障碍动作；达到阈值后显示/更新一条系统通知。
+     *
+     * 设计取舍：
+     *  · **不每条都弹**（会烦）—— 连续第 3 步起才提示，之后原地更新步数；
+     *  · **同一条通知**（固定 id + setOnlyAlertOnce）→ 只在第一次提示时响一下；
+     *  · 空闲 10s 自动撤掉；任务结束时用户也能手动划走。
+     *  · 没有通知权限时静默跳过（不影响操作本身）。
+     */
+    private fun noteA11yOperation(ctx: Context, path: String) {
+        try {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val count: Int
+            synchronized(this) {
+                if (a11ySeqLastAt == 0L || now - a11ySeqLastAt > A11Y_NOTIF_WINDOW_MS) {
+                    a11ySeqCount = 0
+                }
+                // v1.2.188（审查 P2）：/loop/run 是"整段连续操作"——它的内部每一步
+                // 在进程内执行、不再经过 HTTP，若只计 1 步，daemon 的长任务永远
+                // 凑不够阈值 3，通知在最主要场景下不出现。这里按整段计 3 步。
+                a11ySeqCount += if (path == "/loop/run") A11Y_NOTIF_THRESHOLD else 1
+                a11ySeqLastAt = now
+                count = a11ySeqCount
+            }
+            if (count < A11Y_NOTIF_THRESHOLD) return
+            showA11yNotification(ctx, count, a11yOpLabel(ctx, path))
+            synchronized(this) {
+                a11yNotifIdle?.let { a11yNotifHandler.removeCallbacks(it) }
+                val r = Runnable {
+                    runCatching {
+                        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        nm.cancel(A11Y_NOTIF_ID)
+                    }
+                    synchronized(this) {
+                        a11ySeqCount = 0
+                        a11ySeqLastAt = 0L
+                        a11yNotifIdle = null
+                    }
+                }
+                a11yNotifIdle = r
+                a11yNotifHandler.postDelayed(r, A11Y_NOTIF_IDLE_MS)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "a11y notify skipped: ${e.message}")
+        }
+    }
+
+    /** 构建并更新那条「正在操作」通知。 */
+    private fun showA11yNotification(ctx: Context, step: Int, label: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            return   // 没授权就不打扰；操作照常进行
+        }
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    ctx.getString(R.string.notif_channel_agent),
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                )
+            )
+        }
+        val builder = if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(ctx, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION") Notification.Builder(ctx)
+        }
+        // 点通知回到 App（用户想插手/看进度时一步到位）
+        val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+        if (launch != null) {
+            val pi = android.app.PendingIntent.getActivity(
+                ctx, 0, launch,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= 23) android.app.PendingIntent.FLAG_IMMUTABLE else 0)
+            )
+            builder.setContentIntent(pi)
+        }
+        builder.setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(ctx.getString(R.string.notif_a11y_active_title))
+            .setContentText(ctx.getString(R.string.notif_a11y_active_text, step, label))
+            .setOnlyAlertOnce(true)      // 更新时不重复响铃
+            .setAutoCancel(true)
+            .setOngoing(false)
+        nm.notify(A11Y_NOTIF_ID, builder.build())
+    }
+
     /** POST /notify → 系统通知（任务完成推送） */
     private fun notify(ctx: Context, body: String): Pair<Int, String> {
         return try {
@@ -646,12 +809,19 @@ document.getElementById('api').textContent = checks.map(function(c){
     // 解法：把节点树读取丢进单线程 executor，有界等待；超时返回 504 并明确报错，
     // 让上层能区分「服务未开启(503)」与「IPC 卡住(504)」。单线程同时限制了并发，
     // 避免多个僵死任务堆积。
-    private val screenExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+    // v1.2.152 审查修复：原先只有 1 条线程，而 `/loop/run` 会在这个线程上占满
+    // 整段执行时间（最长 180s）——期间任何并发读屏（`/screen`、`/pick`、`/memory`）
+    // 都排在后面，2s 上限一到全部 504，AI 收到"无障碍坏了"的错误信号。
+    // 2 条线程：长任务占一条，快速读屏仍有可用线程（读操作互不冲突）。
+    private val screenExec = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
         Thread(r, "dsh-screen-ipc").apply { isDaemon = true }
     }
 
-    /** 节点树 IPC 的默认上限：正常读屏几十毫秒，2s 足够；超时即判定僵死 */
+    /** 节点树 IPC 的默认上限：稳定后读屏几十毫秒，冷读（见下）约 2.5s */
     private val SCREEN_IPC_TIMEOUT_MS = 2_000L
+
+    /** 冷读重试预算：实测屏幕刚变化后的第一次读树要 2.1-2.5s，稳定后 60-80ms */
+    private val SCREEN_IPC_COLD_RETRY_MS = 5_000L
 
     /**
      * 有界执行无障碍节点树读取。
@@ -659,11 +829,27 @@ document.getElementById('api').textContent = checks.map(function(c){
      */
     private fun <T> withScreenTimeout(
         what: String, timeoutMs: Long = SCREEN_IPC_TIMEOUT_MS, block: () -> T,
-    ): Result<T>? = try {
+    ): Result<T>?  {
+        val first = screenReadOnce(what, timeoutMs, block)
+        if (first != null) return first
+        // ⚠️ v1.2.152 实测修复（模拟器连续 5 次读屏取证）：同一个静止页面，
+        // 前两次各 2075ms 超时→504，随后三次 57-77ms 成功。也就是说 2s 上限
+        // 会把「屏幕刚变化、节点树正在重建」的**冷读**误报成「无障碍卡死」，
+        // 而 AI 收到 504 只会重试一次——正好撞上重建完成，白白多花一轮。
+        // 对上位机来说这是"某些页面莫名停留更久"的直接来源。
+        // 只对短超时路径做一次放宽重试（loop/run 那种长时间预算不重试，
+        // 重试没有意义且会占用执行线程）。
+        if (timeoutMs > 20_000L) return null
+        Log.w(TAG, "screen ipc timeout: $what (>${timeoutMs}ms) — retrying once (cold node tree)")
+        return screenReadOnce(what, SCREEN_IPC_COLD_RETRY_MS, block)
+    }
+
+    /** 单次有界读树：超时返回 null，异常返回 failure */
+    private fun <T> screenReadOnce(what: String, timeoutMs: Long, block: () -> T): Result<T>? = try {
         val future = screenExec.submit(java.util.concurrent.Callable { block() })
         Result.success(future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS))
     } catch (e: java.util.concurrent.TimeoutException) {
-        Log.w(TAG, "screen ipc timeout: $what (>${timeoutMs}ms) — node tree stalled, giving up this read")
+        Log.w(TAG, "screen ipc timeout: $what (>${timeoutMs}ms) — node tree stalled")
         null
     } catch (e: java.util.concurrent.ExecutionException) {
         Result.failure(e.cause ?: e)
@@ -903,15 +1089,53 @@ document.getElementById('api').textContent = checks.map(function(c){
         return 202 to """{"ok":true,"started":true,"package":"$pkg"}"""
     }
 
+    /**
+     * GET /ocr —— 离线 OCR 识别当前屏幕（v1.2.123）。
+     * 无障碍节点树拿不到文字的场景（OPPO 浏览器/WebView/自绘界面）用它
+     * 作为独立文本来源；`/screen` 在文本稀少时会自动附带 OCR 结果
+     * （dumpScreenCompact 兜底），本端点用于强制刷新与诊断。
+     * ?force=1 忽略缓存重新识别。
+     */
+    private fun ocr(query: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val params = parseQuery(query)
+        val force = params["force"] in listOf("1", "true", "yes")
+        val scale = params["scale"]?.toFloatOrNull() ?: 0.5f
+        val r = app.dsh.mobile.ScreenOcr.recognize(svc, force, scale)
+        val arr = JSONArray()
+        for (b in r.blocks) {
+            arr.put(JSONObject().apply {
+                put("text", b.text)
+                put("x", b.cx)
+                put("y", b.cy)
+                put("left", b.left)
+                put("top", b.top)
+                put("right", b.right)
+                put("bottom", b.bottom)
+            })
+        }
+        return 200 to JSONObject().apply {
+            put("ok", !r.unavailable)
+            put("unavailable", r.unavailable)
+            put("cached", r.cached)
+            put("costMs", r.costMs.toInt())
+            put("lines", r.blocks.size)
+            put("blocks", arr)
+        }.toString()
+    }
+
     /** GET /local/status —— 本地快速决策层的就绪状态（v1.2.121） */
     private fun localStatus(ctx: Context): Pair<Int, String> =
-        200 to buildString {
-            append("""{"ok":true,"""")
-            append(""""modelReady":${LocalModel.isModelReady(ctx)},""")
-            append(""""serverRunning":${LocalModel.isServerRunning()},""")
-            append(""""modelPath":${JSONObject.quote(LocalModel.modelFile(ctx).absolutePath)},""")
-            append(""""port":${LocalEmbedder.PORT}}""")
-        }
+        200 to JSONObject().apply {
+            put("ok", true)
+            put("modelReady", LocalModel.isModelReady(ctx))
+            put("serverRunning", LocalModel.isServerRunning())
+            put("modelPath", LocalModel.modelFile(ctx).absolutePath)
+            put("port", LocalEmbedder.PORT)
+            // v1.2.124：本地判决 AI 的实际用量（exact/semantic/none + verify 语义救场）
+            put("stats", FastPicker.stats.snapshot())
+        }.toString()
 
     /**
      * POST /local/ensure —— 确保本地模型与服务就绪（后台执行，v1.2.121）。
@@ -979,6 +1203,393 @@ document.getElementById('api').textContent = checks.map(function(c){
         }
     }
 
+    /**
+     * GET /frame-diff —— 帧差：本地 <5ms 判断「画面变了没」（v1.2.122）。
+     *
+     * 事件流覆盖不了**动态视觉场景**（Canvas 游戏、视频、动画、WebGL）
+     * —— 那些没有节点树也没有可用事件。帧差是这类场景唯一可靠的判据。
+     */
+    private fun frameDiff(): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val r = withScreenTimeout("frame-diff", 5_000) {
+            app.dsh.mobile.Framer.captureAndDiff(svc)
+        }?.getOrNull() ?: return 504 to """{"ok":false,"error":"frame capture timed out"}"""
+        if (r.unavailable) {
+            return 400 to """{"ok":false,"error":"screenshot unavailable (needs API 30+ and screenshot capability; toggle the service off/on)"}"""
+        }
+        val regions = r.hotRegions.joinToString(",") {
+            """{"nx":${"%.3f".format(it.nx)},"ny":${"%.3f".format(it.ny)},"ratio":${"%.3f".format(it.ratio)}}"""
+        }
+        return 200 to buildString {
+            append("""{"ok":true,"changed":${r.changed},"changedRatio":${"%.4f".format(r.changedRatio)},""")
+            append(""""costMs":${r.costMs},"isFirst":${r.isFirst},""")
+            append(""""cx":${"%.3f".format(r.cx)},"cy":${"%.3f".format(r.cy)},""")
+            append(""""hotRegions":[$regions]}""")
+        }
+    }
+
+    /**
+     * POST /frame-wait —— 等画面变化（超时返回 changed:false，替代固定 sleep）。
+     */
+    private fun frameWait(body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val timeoutMs = obj.optLong("timeoutMs", 5000L).coerceIn(300L, 30_000L)
+        val intervalMs = obj.optLong("intervalMs", 250L).coerceIn(100L, 2000L)
+        val start = System.currentTimeMillis()
+        var polls = 0
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            polls++
+            val r = runCatching { app.dsh.mobile.Framer.captureAndDiff(svc) }.getOrNull()
+            if (r != null && r.changed) {
+                return 200 to """{"ok":true,"changed":true,"costMs":${System.currentTimeMillis() - start},"polls":$polls,"changedRatio":${"%.4f".format(r.changedRatio)}}"""
+            }
+            Thread.sleep(intervalMs)
+        }
+        return 200 to """{"ok":true,"changed":false,"timedOut":true,"polls":$polls,"waitedMs":$timeoutMs}"""
+    }
+
+    /**
+     * POST /loop/run —— 本地闭环执行「决策程序」（v1.2.123）。
+     *
+     * body: 决策程序 JSON（字段说明见 LocalLoopExecutor.run 的 KDoc）
+     * resp: 执行报告 JSON —— 每步 via/score/耗时/尝试记录，escalate 时附候选池证据。
+     *
+     * 同步执行（一条连接跑到结束，上限 180s）：调用方一次请求即可拿到完整闭环报告。
+     * 与 /pick 的区别：/pick 是单步判别，/loop/run 是**连续多步闭环**（PICK→ACT→VERIFY
+     * →RETRY→ESCALATE），即「云端编译一次、本地跑完一串」的那条快路径。
+     */
+    private fun loopRun(ctx: Context, body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val r = withScreenTimeout("loop/run", 180_000L) {
+            LocalLoopExecutor.run(ctx, svc, body)
+        }
+        return when {
+            r == null -> 504 to """{"ok":false,"error":"loop timed out (>180s)"}"""
+            r.isSuccess -> 200 to r.getOrThrow()
+            else -> 500 to ("""{"ok":false,"error":"loop execution failed: """ +
+                (r.exceptionOrNull()?.message ?: "unknown").replace("\"", "'") + """}""")
+        }
+    }
+
+    // ==================== 视觉定位端点组（v1.2.124） ====================
+    //
+    // 无节点树场景（游戏 / Canvas / 纯图片）的「目标在哪」。
+    // 分工：云端看懂画面并圈出目标（/vision/crop 存模板）→ 本地每帧模板匹配
+    // 定位（/vision/track）→ 点击 / 拖动（/vision/tap、/vision/drag）。
+    // 手机游戏的操作无非「虚拟按钮点按 + 摇杆/视角拖动」，手势层都能做，
+    // 缺的只是视觉定位——这组端点补的就是它，毫秒级、不需要云端往返。
+
+    /**
+     * GET /daemon/status —— 悬浮窗用的：daemon 是否在跑任务 / 是否 needsHelp。
+     * v1.2.157 用户反馈：daemon 卡住时用户无法主动取消，且一切回应用它又切回浏览器干活。
+     * 悬浮窗第三档据此显示/隐藏「退出 daemon」按钮，并可在 needsHelp 时提示用户。
+     */
+    private fun daemonStatus(): Pair<Int, String> {
+        val tasks = java.io.File(dshHome(), "tasks")
+        val out = org.json.JSONObject()
+        val arr = org.json.JSONArray()
+        tasks.listFiles()?.filter { it.name.endsWith(".json") }?.forEach { f ->
+            runCatching {
+                val o = org.json.JSONObject(f.readText())
+                val st = o.optString("status")
+                if (st == "running" || st == "queued" || o.optBoolean("needsHelp", false)) {
+                    arr.put(org.json.JSONObject().apply {
+                        put("id", o.optString("id", f.nameWithoutExtension))
+                        put("status", st)
+                        put("needsHelp", o.optBoolean("needsHelp", false))
+                        put("goal", o.optString("goal", "").take(60))
+                        put("rounds", o.optJSONArray("history")?.length() ?: 0)
+                    })
+                }
+            }
+        }
+        out.put("active", arr.length() > 0)
+        out.put("tasks", arr)
+        return 200 to out.toString()
+    }
+
+    /** POST /daemon/stop —— 立即停止当前 daemon 任务（悬浮窗「退出 daemon」按钮） */
+    private fun daemonStop(): Pair<Int, String> {
+        val tasks = java.io.File(dshHome(), "tasks")
+        var stopped = 0
+        tasks.listFiles()?.filter { it.name.endsWith(".json") }?.forEach { f ->
+            runCatching {
+                val o = org.json.JSONObject(f.readText())
+                if (o.optString("status") == "running") {
+                    o.put("stopRequested", true)
+                    f.writeText(o.toString())
+                    java.io.File(tasks, o.optString("id", f.nameWithoutExtension) + ".stop")
+                        .writeText("stop")
+                    stopped++
+                }
+            }
+        }
+        return 200 to """{"ok":true,"stopped":$stopped}"""
+    }
+
+    /** $DSH_HOME（引擎子进程的 dsh-home 目录；悬浮窗/daemon 端点共用） */
+    private fun dshHome(): java.io.File {
+        val c = shotCtx ?: return java.io.File("")
+        return java.io.File(EngineConfig.engineRoot(c).parentFile, "dsh-home")
+    }
+
+    private fun visionDir(ctx: Context): java.io.File =
+        java.io.File(ctx.filesDir, "vision").apply { mkdirs() }
+
+    /**
+     * POST /vision/crop —— 从当前屏幕裁剪一块存为模板（云端圈目标用）。
+     * body: {"id":"btn_attack", "x":..,"y":..,"w":..,"h":..} 绝对像素
+     *   或  {"id":"..", "nx":0.7,"ny":0.8,"nw":0.2,"nh":0.2} 归一化坐标
+     * resp: {"ok":true,"id":"..","w":..,"h":..,"pngBytes":N}
+     */
+    private fun visionCrop(ctx: Context, body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val id = obj.optString("id").ifBlank { "t${System.currentTimeMillis()}" }
+        // 同 trackOnce：直接调用，不经 screenExec（避免被节点树 IPC 拖死）
+        val shot = runCatching { svc.screenshotArgb() }.getOrNull()
+            ?: return 500 to """{"ok":false,"error":"screenshot unavailable (needs API 30+ capability)"}"""
+        val (_, sw, sh) = shot
+        // 归一化坐标优先（云端看截图后给的通常是比例）
+        val x: Int; val y: Int; val w: Int; val h: Int
+        if (obj.has("nx")) {
+            val nx = obj.optDouble("nx"); val ny = obj.optDouble("ny")
+            val nw = obj.optDouble("nw", 0.2); val nh = obj.optDouble("nh", 0.2)
+            x = (nx * sw).toInt(); y = (ny * sh).toInt()
+            w = (nw * sw).toInt(); h = (nh * sh).toInt()
+        } else {
+            x = obj.optInt("x"); y = obj.optInt("y")
+            w = obj.optInt("w"); h = obj.optInt("h")
+        }
+        val cropped = app.dsh.mobile.VisionTracker.crop(shot, x, y, w, h)
+            ?: return 400 to """{"ok":false,"error":"crop rect out of bounds ($x,$y,$w,$h) screen=${sw}x$sh"}"""
+        val (arr, cw, ch) = cropped
+        // 有效性检查（实测教训：裁到纯色背景/黑帧时模板无特征，匹配会随机跳到
+        // 任意区域且分数虚高——例如裁到深蓝背景后匹配到屏幕底部、分数 0.956）
+        val variance = run {
+            var sum = 0.0; var sum2 = 0.0
+            val step = maxOf(1, arr.size / 2000)
+            var n = 0
+            var i = 0
+            while (i < arr.size) {
+                val c = arr[i]
+                val g = (((c shr 16) and 0xFF) * 299 + ((c shr 8) and 0xFF) * 587 + (c and 0xFF) * 114) / 1000.0
+                sum += g; sum2 += g * g; n++
+                i += step
+            }
+            val mean = sum / n
+            sum2 / n - mean * mean
+        }
+        if (variance < 120.0) {
+            return 400 to """{"ok":false,"error":"cropped area is too flat (variance=${"%.0f".format(variance)}) — likely a solid-colour background; verify the coordinates with /screenshot"}"""
+        }
+        val png = app.dsh.mobile.VisionTracker.encodePng(arr, cw, ch)
+            ?: return 500 to """{"ok":false,"error":"png encode failed"}"""
+        val f = java.io.File(visionDir(ctx), "$id.png")
+        f.writeBytes(png)
+        return 200 to """{"ok":true,"id":$id,"w":$cw,"h":$ch,"pngBytes":${png.size},"path":"${f.absolutePath}"}"""
+    }
+
+    /** 读模板文件并解码（/vision/track 与 tap/drag 共用） */
+    private fun loadTemplate(ctx: Context, id: String): Triple<IntArray, Int, Int>? {
+        val f = java.io.File(visionDir(ctx), "$id.png")
+        if (!f.exists()) return null
+        return app.dsh.mobile.VisionTracker.decodePng(f.readBytes())
+    }
+
+    private fun trackOnce(
+        svc: DshAccessibilityService,
+        ctx: Context,
+        id: String,
+        region: FloatArray? = null,
+    ): app.dsh.mobile.VisionTracker.Match? {
+        val tmpl = loadTemplate(ctx, id) ?: return null
+        // ⚠️ 截图**直接调用**，不走 withScreenTimeout/screenExec —— 实测该线程池
+        // 会被节点树 IPC 挂起拖死，导致截图排队全部超时（/screenshot 端点不受影响
+        // 正是因为它直接调用）。screenshotArgb 自带 latch 超时，不会无限阻塞。
+        var shot: Triple<IntArray, Int, Int>? = null
+        for (i in 0 until 3) {
+            shot = runCatching { svc.screenshotArgb() }.getOrNull()
+            if (shot != null) break
+            Thread.sleep(300)
+        }
+        val s = shot ?: return null
+        return app.dsh.mobile.VisionTracker.locate(s, tmpl.first, tmpl.second, tmpl.third, region)
+    }
+
+    /** 解析可选的搜索区域（归一化 nx/ny/nw/nh） */
+    private fun parseRegion(obj: JSONObject): FloatArray? {
+        val r = obj.optJSONObject("region") ?: return null
+        return floatArrayOf(
+            r.optDouble("nx", 0.0).toFloat(),
+            r.optDouble("ny", 0.0).toFloat(),
+            r.optDouble("nw", 1.0).toFloat(),
+            r.optDouble("nh", 1.0).toFloat(),
+        )
+    }
+
+    /**
+     * POST /vision/track —— 定位模板在当前屏幕的位置（本地模板匹配，毫秒级）。
+     * body: {"id":"btn_attack"}
+     * resp: {"ok":true,"x":..,"y":..,"score":0.88,"costMs":12,...}
+     */
+    private fun visionTrack(ctx: Context, body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val id = runCatching { JSONObject(body).optString("id") }.getOrDefault("")
+        if (id.isBlank()) return 400 to """{"ok":false,"error":"field 'id' required"}"""
+        if (loadTemplate(ctx, id) == null) return 404 to """{"ok":false,"error":"template '$id' not found (use /vision/crop first)"}"""
+        val region = parseRegion(runCatching { JSONObject(body) }.getOrDefault(JSONObject()))
+        val m = trackOnce(svc, ctx, id, region)
+            ?: return 500 to """{"ok":false,"error":"match failed (screenshot unavailable?)"}"""
+        return 200 to buildString {
+            append("""{"ok":true,"id":${JSONObject.quote(id)},"x":${m.x},"y":${m.y},""")
+            append(""""score":${"%.3f".format(m.score)},"costMs":${m.costMs},""")
+            append(""""proc":{"x":${m.procX},"y":${m.procY},"w":${m.procW},"h":${m.procH},"fw":${m.frameW},"fh":${m.frameH}}}""")
+        }
+    }
+
+    /**
+     * POST /vision/tap —— 定位并点击（虚拟按钮的标准操作）。
+     * body: {"id":"btn_attack", "minScore":0.6}
+     */
+    private fun visionTap(ctx: Context, body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val id = obj.optString("id")
+        if (id.isBlank()) return 400 to """{"ok":false,"error":"field 'id' required"}"""
+        val minScore = obj.optDouble("minScore", 0.5)
+        val m = trackOnce(svc, ctx, id, parseRegion(obj))
+            ?: return 500 to """{"ok":false,"error":"match failed"}"""
+        if (m.score < minScore) {
+            return 200 to """{"ok":false,"error":"score too low","score":${"%.3f".format(m.score)},"x":${m.x},"y":${m.y},"minScore":$minScore}"""
+        }
+        val ok = withTimeoutTap(svc, m.x, m.y)
+        return 200 to """{"ok":$ok,"tapped":$ok,"x":${m.x},"y":${m.y},"score":${"%.3f".format(m.score)},"costMs":${m.costMs}}"""
+    }
+
+    private fun withTimeoutTap(svc: DshAccessibilityService, x: Int, y: Int): Boolean =
+        runCatching { svc.dispatchTapRect(android.graphics.Rect(x, y, x, y)) }.getOrDefault(false)
+
+    /**
+     * POST /vision/drag —— 定位并拖动（摇杆 / 视角滑动）。
+     * body: {"id":"joystick", "dx":80, "dy":0, "ms":600}  从目标中心拖 dx,dy（原图像素）
+     *   或  {"id":"joystick", "toNx":0.5,"toNy":0.8}      拖到屏幕归一化位置
+     */
+    private fun visionDrag(ctx: Context, body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val id = obj.optString("id")
+        if (id.isBlank()) return 400 to """{"ok":false,"error":"field 'id' required"}"""
+        val m = trackOnce(svc, ctx, id, parseRegion(obj))
+            ?: return 500 to """{"ok":false,"error":"match failed"}"""
+        val (sw, sh) = svc.screenSize()
+        val x2: Float; val y2: Float
+        if (obj.has("toNx")) {
+            x2 = (obj.optDouble("toNx") * sw).toFloat()
+            y2 = (obj.optDouble("toNy") * sh).toFloat()
+        } else {
+            x2 = (m.x + obj.optDouble("dx", 0.0)).toFloat()
+            y2 = (m.y + obj.optDouble("dy", 0.0)).toFloat()
+        }
+        val ms = obj.optLong("ms", 500L).coerceIn(100L, 3000L)
+        val ok = runCatching { svc.dispatchSwipe(m.x.toFloat(), m.y.toFloat(), x2, y2, ms) }.getOrDefault(false)
+        return 200 to """{"ok":$ok,"fromX":${m.x},"fromY":${m.y},"toX":${x2.toInt()},"toY":${y2.toInt()},"ms":$ms,"score":${"%.3f".format(m.score)}}"""
+    }
+
+    /** GET /vision/list —— 已存模板列表 */
+    private fun visionList(ctx: Context): Pair<Int, String> {
+        val files = visionDir(ctx).listFiles { f -> f.name.endsWith(".png") } ?: emptyArray()
+        val arr = org.json.JSONArray()
+        files.forEach { arr.put(JSONObject().put("id", it.nameWithoutExtension).put("bytes", it.length())) }
+        return 200 to JSONObject().put("ok", true).put("templates", arr).toString()
+    }
+
+    /**
+     * POST /memory/lookup —— 查场景记忆（v1.2.125）。
+     * body: {"goal":"...", "dump":"..."(可选，不给则自动读屏)}
+     * resp: {"ok":true,"hit":true,"similarity":0.88,"reused":3,"plan":{...}}
+     */
+    private fun memoryLookup(ctx: Context, body: String): Pair<Int, String> {
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val goal = obj.optString("goal").trim()
+        if (goal.isBlank()) return 400 to """{"ok":false,"error":"field 'goal' required"}"""
+        var dump = obj.optString("dump")
+        if (dump.isBlank()) {
+            val svc = DshAccessibilityService.instance
+                ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+            dump = withScreenTimeout("memory.dump") { svc.dumpScreenCompact("all") }
+                ?.getOrNull() ?: return 504 to """{"ok":false,"error":"screen read timed out"}"""
+        }
+        val fp = SceneMemory.fingerprint(dump, DshAccessibilityService.instance?.foregroundPackage() ?: "")
+        val (entry, sim) = SceneMemory.lookup(ctx, goal, fp)
+        return if (entry != null) {
+            200 to JSONObject().apply {
+                put("ok", true).put("hit", true)
+                put("similarity", "%.2f".format(sim).toDouble())
+                put("reused", entry.hits)
+                put("plan", entry.plan)
+            }.toString()
+        } else {
+            200 to JSONObject().apply {
+                put("ok", true).put("hit", false)
+                put("bestSimilarity", "%.2f".format(sim).toDouble())
+                put("fpSize", fp.size)
+            }.toString()
+        }
+    }
+
+    /**
+     * POST /memory/store —— 存一条成功决策（v1.2.125）。
+     * body: {"goal":"...", "plan":{...}, "dump":"..."(可选)}
+     */
+    private fun memoryStore(ctx: Context, body: String): Pair<Int, String> {
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val goal = obj.optString("goal").trim()
+        val plan = obj.optJSONObject("plan")
+        if (goal.isBlank() || plan == null) return 400 to """{"ok":false,"error":"fields 'goal' and 'plan' required"}"""
+        var dump = obj.optString("dump")
+        if (dump.isBlank()) {
+            val svc = DshAccessibilityService.instance
+                ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+            dump = withScreenTimeout("memory.dump") { svc.dumpScreenCompact("all") }
+                ?.getOrNull() ?: return 504 to """{"ok":false,"error":"screen read timed out"}"""
+        }
+        val fp = SceneMemory.fingerprint(dump, DshAccessibilityService.instance?.foregroundPackage() ?: "")
+        SceneMemory.store(ctx, goal, fp, plan)
+        return 200 to JSONObject().put("ok", true).put("stored", true)
+            .put("fpSize", fp.size).put("summary", SceneMemory.stats(ctx)).toString()
+    }
+
+    /**
+     * POST /memory/confirm —— 任务级确认（v1.2.126）：云端判定目标达成后调用，
+     * 把本次成功执行产生的 **pending** 记忆转正（pending 不参与命中，防污染）。
+     * body: {"goal":"...", "dump":"..."(可选)}
+     * resp: {"ok":true,"promoted":N,"pendingLeft":M}
+     */
+    private fun memoryConfirm(ctx: Context, body: String): Pair<Int, String> {
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val goal = obj.optString("goal").trim()
+        if (goal.isBlank()) return 400 to """{"ok":false,"error":"field 'goal' required"}"""
+        val n = SceneMemory.confirm(ctx, goal)
+        return 200 to JSONObject().put("ok", true).put("promoted", n)
+            .put("pendingLeft", SceneMemory.pendingCount(ctx)).toString()
+    }
+
     /** /screen-changed：事件驱动变化摘要（v1.2.113）——毫秒级，不 dump 整树 */
     private fun screenChanged(): Pair<Int, String> {
         val svc = DshAccessibilityService.instance
@@ -1020,6 +1631,20 @@ document.getElementById('api').textContent = checks.map(function(c){
                 b64 = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
                 bmp.recycle()
             }
+            // ?save=1（v1.2.138）：保存到文件**只回路径**——base64 极吃上下文
+            // （1080p PNG ≈ 100-200KB），AI 用 read_image 按需读图更省。
+            // 顺带清理旧图（保留最近 12 张 shot-*），避免目录无限膨胀。
+            if (parseQuery(query)["save"] == "1") {
+                val c = shotCtx
+                if (c != null) {
+                    val dir = java.io.File(c.filesDir, "screens").apply { mkdirs() }
+                    val f = java.io.File(dir, "shot-${System.currentTimeMillis()}.png")
+                    f.writeBytes(android.util.Base64.decode(b64, android.util.Base64.DEFAULT))
+                    dir.listFiles { file -> file.name.startsWith("shot-") }
+                        ?.sortedBy { it.lastModified() }?.dropLast(12)?.forEach { it.delete() }
+                    return 200 to """{"ok":true,"path":"${f.absolutePath}","width":$w,"height":$h,"hint":"read it with the read_image tool"}"""
+                }
+            }
             return 200 to """{"ok":true,"format":"png","width":$w,"height":$h,"base64":"$b64"}"""
         } catch (e: Exception) {
             500 to """{"ok":false,"error":"${e.message}"}"""
@@ -1046,7 +1671,12 @@ document.getElementById('api').textContent = checks.map(function(c){
         return try {
             val obj = JSONObject(body)
             val ok = when (obj.optString("type")) {
-                "swipe" -> svc.dispatchSwipe(
+                // v1.2.149：默认**拟人化**滑动（弧线+变速+抖动）；human=false 精确直线
+                "swipe" -> if (obj.optBoolean("human", true)) svc.dispatchSwipeHuman(
+                    obj.getDouble("x1").toFloat(), obj.getDouble("y1").toFloat(),
+                    obj.getDouble("x2").toFloat(), obj.getDouble("y2").toFloat(),
+                    obj.optLong("durationMs", 300L),
+                ) else svc.dispatchSwipe(
                     obj.getDouble("x1").toFloat(), obj.getDouble("y1").toFloat(),
                     obj.getDouble("x2").toFloat(), obj.getDouble("y2").toFloat(),
                     obj.optLong("durationMs", 300L),
@@ -1350,6 +1980,20 @@ document.getElementById('api').textContent = checks.map(function(c){
                 put("steps", stepsJson)
                 if (interfered) put("userInterference", true)
                 put("pkg", snap.pkg ?: "")
+                // v1.2.128 动态引导（真机反馈「AI 还是在自己操作无障碍功能」）：
+                // 多步 batch = AI 自己在当 picker（无本地判别/验证/重试）。静态
+                // 提示词容易被忽略，在**响应里**给一次明确引导；仅 ≥3 步时出现，
+                // 单步/双步不打扰。
+                if (steps.size >= 3) {
+                    put(
+                        "tip",
+                        "This multi-step flow was executed by you, not by the local loop — " +
+                            "no picking, no target-state verification, no retry was applied " +
+                            "(ok=true only means dispatch). Next time express it as a `loop run` " +
+                            "plan: the local executor picks anchors (exact/semantic), verifies " +
+                            "each step, retries failures, and needs no round trip per action.",
+                    )
+                }
             }.toString().let { 200 to it }
         } catch (e: Exception) {
             500 to """{"ok":false,"error":"${e.message}"}"""
@@ -1430,7 +2074,10 @@ document.getElementById('api').textContent = checks.map(function(c){
     private fun launch(ctx: Context, body: String): Pair<Int, String> {
         return try {
             val obj = JSONObject(body)
-            val pkg = obj.optString("package").orEmpty()
+            // v1.2.131 修：接受 pkg 别名——gates 的 `scr macro open-settings` 一直传
+            // {"pkg":...}，端点只认 "package"，于是该 macro 长期 100% 失败
+            // （AI 体验反馈实测抓到：报 "need 'package' or 'label' field"）。
+            val pkg = obj.optString("package").ifBlank { obj.optString("pkg") }.orEmpty()
             val label = obj.optString("label").orEmpty()
             val pm = ctx.packageManager
 
@@ -1469,6 +2116,78 @@ document.getElementById('api').textContent = checks.map(function(c){
         } catch (e: Exception) {
             500 to """{"ok":false,"error":"${e.message}"}"""
         }
+    }
+
+    /**
+     * POST /launch-intent —— 按 Intent action 直达系统页面（v1.2.137）。
+     * 确定性导航的快捷命令（android.settings.DISPLAY_SETTINGS 等），
+     * 供 scr macro 的设置直达与 loop 的 intent 动作共用。
+     */
+    private fun launchIntent(ctx: Context, body: String): Pair<Int, String> {
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val act = obj.optString("action")
+        if (act.isBlank()) return 400 to """{"ok":false,"error":"action required"}"""
+        return runCatching {
+            val intent = android.content.Intent(act)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            obj.optString("data").takeIf { it.isNotBlank() }?.let {
+                intent.data = android.net.Uri.parse(it)
+            }
+            ctx.startActivity(intent)
+            200 to """{"ok":true,"launched":"$act"}"""
+        }.getOrElse { 500 to """{"ok":false,"error":"${it.message}"}""" }
+    }
+
+    /** POST /tap-id —— 按 resource-id 点击（v1.2.141）。比文本定位稳：不受界面语言、OCR 误差影响 */
+    private fun tapId(body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val id = runCatching { JSONObject(body).optString("id") }.getOrNull().orEmpty()
+        if (id.isBlank()) return 400 to """{"ok":false,"error":"id required"}"""
+        val hit = runCatching { svc.tapById(id) }.getOrNull()
+            ?: return 404 to """{"ok":false,"error":"no node with id '$id'"}"""
+        return 200 to """{"ok":true,"id":"$id","x":${hit.first},"y":${hit.second},"via":"${hit.third}"}"""
+    }
+
+    /** POST /wait-text —— 等文本出现/消失（v1.2.141）：{text, gone?, timeoutMs?} */
+    private fun waitText(body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val obj = runCatching { JSONObject(body) }.getOrNull()
+            ?: return 400 to """{"ok":false,"error":"invalid json"}"""
+        val text = obj.optString("text")
+        val gone = obj.optBoolean("gone", false)
+        val timeoutMs = obj.optLong("timeoutMs", 8000L).coerceIn(200L, 60_000L)
+        if (text.isBlank()) return 400 to """{"ok":false,"error":"text required"}"""
+        val t0 = System.currentTimeMillis()
+        val deadline = t0 + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val dump = svc.dumpScreenCompact("all")
+            if (dump.contains(text, true) != gone) {
+                return 200 to """{"ok":true,"text":"$text","gone":$gone,"waitedMs":${System.currentTimeMillis() - t0}}"""
+            }
+            Thread.sleep(200)
+        }
+        return 200 to """{"ok":false,"error":"timeout","text":"$text","gone":$gone,"timeoutMs":$timeoutMs}"""
+    }
+
+    /** POST /scroll-edge —— 滚到顶/底（v1.2.141）：{direction: top|bottom} */
+    private fun scrollEdge(body: String): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val dir = runCatching { JSONObject(body).optString("direction", "bottom") }.getOrDefault("bottom")
+        val n = runCatching { svc.scrollToEdge(forward = dir != "top") }.getOrDefault(0)
+        return 200 to """{"ok":true,"direction":"$dir","swipes":$n}"""
+    }
+
+    /** GET /notif —— 最近的通知（v1.2.141，来自无障碍通知事件缓存） */
+    private fun notif(): Pair<Int, String> {
+        val svc = DshAccessibilityService.instance
+            ?: return 503 to """{"ok":false,"error":"accessibility service not enabled"}"""
+        val arr = JSONArray()
+        svc.recentNotifications().forEach { arr.put(it) }
+        return 200 to JSONObject().put("ok", true).put("notifications", arr).toString()
     }
 
     private fun respond(client: Socket, status: Int, json: String) {

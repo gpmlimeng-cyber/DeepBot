@@ -57,18 +57,16 @@ class DshAccessibilityService : AccessibilityService() {
         // 服务重连 = 系统层面重新装配无障碍能力，此时恢复显示是符合直觉的语义。
         runCatching {
             StatusOverlay.resetHidden()
-            if (DshApp.experimentalOn(this)) {
-                StatusOverlay.show(this)
-                // ⚠️ v1.2.106：**流式悬浮条暂时下线**（主人 2026-10-09 决定）。
-                // 真机上仍报「session 解压失败」（诊断已能显示具体文件与原因，但根因
-                // 未定：模拟器上用严格真实格式的多帧会话可正常渲染，真机不行，差异
-                // 尚未定位）。功能不成熟就先摘掉，免得用户看到空白浮条或误导性诊断；
-                // 代码整体保留，排查清楚后解开下面两行注释即可恢复。
-                // tickerBar().show()
-                // tickerBar().startPolling()
-            } else {
-                Log.i("DshA11y", "overlay suppressed: experimental features off")
-            }
+            // v1.2.182（用户要求）：**原「试验性功能」开关已移除**，悬浮窗常驻——
+            // 开关取消后不再有"默认不显示"的语义，服务连上即展示（用户随时看到 AI 在做什么）。
+            StatusOverlay.show(this)
+            // ⚠️ v1.2.106：**流式悬浮条暂时下线**（主人 2026-10-09 决定）。
+            // 真机上仍报「session 解压失败」（诊断已能显示具体文件与原因，但根因
+            // 未定：模拟器上用严格真实格式的多帧会话可正常渲染，真机不行，差异
+            // 尚未定位）。功能不成熟就先摘掉，免得用户看到空白浮条或误导性诊断；
+            // 代码整体保留，排查清楚后解开下面两行注释即可恢复。
+            // tickerBar().show()
+            // tickerBar().startPolling()
         }.onFailure { android.util.Log.w("DshA11y", "overlay show failed: ${it.message}") }
         // 语音输入（v1.2.65）：麦克风回调由服务自己持有 —— 旧版在 MainActivity 里赋值，
         // 主界面没活着时点麦克风完全无响应（且面板因窗口 token 不合法从未显示过）。
@@ -86,6 +84,36 @@ class DshAccessibilityService : AccessibilityService() {
         //  · 双服务互拉（AlarmManager 心跳等）耗电明显，且属灰色手段
         //  · 这里只在**确实掉了**的时候补一刀，正常情况零开销
         startKeepAliveWatchdog()
+
+        // 本地快速决策层自动就绪（v1.2.123，真机反馈修复）
+        // 此前 /local/ensure 只有外部显式调用才会触发 —— UI、云端提示词、
+        // gates 脚本里**都没有调用点**，于是本地嵌入模型永远不会下载、
+        // llama-server 永不启动，FastPicker 语义层恒空转（真机实测
+        // 「基本没用到本地判决 AI」）。服务连接 = 用户在用了，此时后台
+        // 静默就绪：失败不打扰（扩展未装时返回 false 只记日志）。
+        startLocalModelAutoReady()
+    }
+
+    /**
+     * 后台预热。
+     *
+     * v1.2.182（用户要求「把无障碍功能 max+ 删了」）：原先受 max+ 开关控制的
+     * **本地模型自动下载/启动**一并移除 —— 那段行为需要用户知情同意（读 API key +
+     * 下载 15MB 模型），开关取消后不能再静默执行。引擎若需要，仍可显式调用
+     * `POST /local/ensure`（AgentBridge 提供，属主动请求）。
+     *
+     * OCR 预热与开关无关（模型随 APK 分发、不联网、不读凭证），始终执行。
+     */
+    private fun startLocalModelAutoReady() {
+        Thread({
+            // OCR 预热：ML Kit 模型加载（首次 ~1-2s）提前到后台，
+            // 用户首次真实使用不再付 5s 冷启动（真机实测 5.1s → 热态 ~0.5s）
+            runCatching {
+                Thread.sleep(2000)
+                ScreenOcr.warmUp(this)
+                Log.i("DshA11y", "ocr warmed up")
+            }
+        }, "ocr-warmup").apply { isDaemon = true }.start()
     }
 
     // ==================== 语音输入编排（v1.2.65） ====================
@@ -419,7 +447,13 @@ class DshAccessibilityService : AccessibilityService() {
             onPartial = { t -> panel?.setText(t, final = false) },
             onFinal = { t ->
                 panel?.setText(t, final = true)
-                StatusOverlay.setListening(false)
+                // ⚠️ v1.2.182（用户反馈「语音输入完会闪一下」）：这里**不再**
+                // 立即 setListening(false)。
+                // 根因：setListening(false) → setIdle() → 若悬浮窗是"因干活自动展开"
+                // 的状态，会立刻 expandLevel=0 收起 —— 视觉上就是识别出文字的那一瞬
+                // 悬浮球/面板猛地缩一下（用户说的"闪一下"）。
+                // 现在保持聆听态直到面板隐藏（发送/关闭时 onHide → stopListening），
+                // 状态切换与面板退出动画同步发生，不再有突兀的收起。
                 stopWatchdog()
             },
             onError = { msg ->
@@ -441,10 +475,12 @@ class DshAccessibilityService : AccessibilityService() {
                 }
             },
             onEnd = {
-                StatusOverlay.setListening(false)
                 stopWatchdog()
+                // 空文本（误触/没听清）→ 收起面板并回空闲；
+                // 有文本 → 保持聆听态让用户编辑/发送，避免"闪一下"（见 onFinal 注释）
                 if (voicePanel?.currentText().isNullOrEmpty()) {
                     voicePanel?.hide(stopAudio = false)
+                    StatusOverlay.setListening(false)
                 }
             },
         )
@@ -502,10 +538,12 @@ class DshAccessibilityService : AccessibilityService() {
             },
             onEnd = {
                 if (gen == voiceGeneration) {
-                    StatusOverlay.setListening(false)
                     stopWatchdog()
+                    // 同系统通道（v1.2.182）：有文本就保持聆听态，等用户发送/关闭；
+                    // 空文本才收起并回空闲 —— 避免识别结束时悬浮窗突然收起（"闪一下"）。
                     if (voicePanel?.currentText().isNullOrEmpty()) {
                         voicePanel?.hide(stopAudio = false)
+                        StatusOverlay.setListening(false)
                     }
                 }
             },
@@ -524,6 +562,19 @@ class DshAccessibilityService : AccessibilityService() {
             }
             AccessibilityEvent.TYPE_TOUCH_INTERACTION_END -> {
                 lastTouchEndAt = System.currentTimeMillis()
+            }
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
+                // v1.2.141：缓存通知内容供桥的 /notif 读取（任务完成通知、
+                // 验证"是否弹了通知"等场景；无需额外的 NotificationListenerService）
+                val pkg = e.packageName?.toString().orEmpty()
+                val texts = e.text?.mapNotNull { it?.toString()?.trim() }?.filter { it.isNotEmpty() }
+                if (!texts.isNullOrEmpty()) {
+                    val line = "$pkg: ${texts.joinToString(" | ")}"
+                    synchronized(notifLock) {
+                        notifLog.addFirst(line)
+                        while (notifLog.size > 20) notifLog.removeLast()
+                    }
+                }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 // ⚠️ v1.2.114：主线程只提取文本（见字段区说明），其余投事件线程。
@@ -575,7 +626,7 @@ class DshAccessibilityService : AccessibilityService() {
         // AudioRecord 会随进程残留，系统一直显示麦克风占用
         stopListening()
         stopKeepAliveWatchdog()
-        runCatching { voicePanel?.hide() }
+        runCatching { voicePanel?.dispose() }   // v1.2.188：同步移除，不等 180ms 动画
         voicePanel = null
         runCatching { StatusOverlay.hide(this) }
         super.onDestroy()
@@ -721,22 +772,60 @@ class DshAccessibilityService : AccessibilityService() {
      *
      * @param filter "all" | "clickable"（含 editable）| "editable"
      */
-    fun dumpScreenCompact(filter: String = "all"): String {
+    /** OCR 跳过顶部比例（v1.2.156）：实测状态栏(3%)与浏览器地址栏(9%)都在 12% 内，
+     *  且这两条在 dump 里只产出 `o0 5:06 3G` 这类噪声行——跳过它们既减像素提速，
+     *  又少噪声；再往下是真内容区，不裁（canvas/游戏的内容可能就贴在顶部）。 */
+    private val OCR_TOP_SKIP = 0.12f
+
+    fun dumpScreenCompact(filter: String = "all", ocrFallback: Boolean = true): String {
+        // v1.2.152 审查修复：本函数经 withScreenTimeout 在 2s 上限内运行，而图标
+        // 识别要**额外截一帧**（1.5s 预算）——叠加后会把 /screen 顶成 504，调用方
+        // 误判"无障碍卡死"。改为按已耗时动态让路：剩余时间不够就跳过图标识别
+        // （图标是加分项，读屏本身是必需项）。
+        val tDumpStart = System.nanoTime() / 1_000_000
         val sb = StringBuilder()
         var count = 0
+        // v1.2.123 实测修正：用**内容区**（屏幕 25% 高度以下）的文本量判定，
+        // 而非全屏——Chrome/浏览器类界面的顶部 UI 壳（地址栏/标签按钮）
+        // 常有上百字符，但页面内容区（WebView/canvas）一个文本节点都没有。
+        // 全屏判定会漏掉真正需要 OCR 的场景（实测：canvas 页 97 字符不触发）。
+        var contentChars = 0
+        val contentTop = rootHeight * 0.25
         val filterRestricted = filter != "all"
         val lines = mutableListOf<String>()
+        // v1.2.142 图标上下文关联（"看得懂图标"的零成本一步）：收集结构化行，
+        // walk 结束后为**无文本且可点击**的节点（图标）找最近文本作推断标签。
+        // 实测缺口：国产 App 的图标常无 contentDescription，dump 里只剩
+        // `- @x,y c`，AI 无从判断；空间关系（同行/邻近）是最可靠的语义信号。
+        data class ConvRow(
+            val label: String, val x: Int, val y: Int,
+            val w: Int, val h: Int,
+            val flags: String, val hasText: Boolean,
+        )
+        val rows = ArrayList<ConvRow>()
         fun walk(node: AccessibilityNodeInfo?) {
             if (node == null || count >= MAX_NODES) return
             val rect = Rect().also { node.getBoundsInScreen(it) }
             val visible = rect.width() > 0 && rect.height() > 0 &&
                 rect.top < rootHeight && rect.bottom > 0
             if (visible) {
-                val text = node.text?.toString()?.trim().orEmpty()
+                var text = node.text?.toString()?.trim().orEmpty()
                 val desc = node.contentDescription?.toString()?.trim().orEmpty()
                 val editable = node.isEditable
                 val clickable = node.isClickable
-                if ((text.isNotEmpty() || desc.isNotEmpty() || clickable) &&
+                // v1.2.153 实测修复（靶场发现）：**空输入框的 placeholder 只在
+                // hintText 里**（Chromium/WebView 尤其如此：`<input placeholder="搜索商品">`
+                // 的节点 text 为空、desc 为空，dump 里只剩 `- @x,y ce [edit]`）。
+                // 后果：AI 既认不出这个框是干什么的，也点不准它——真实世界的
+                // 登录/搜索/验证码框全部中招。用 `p:` 前缀暴露，与 `d:`（desc）同构。
+                if (text.isEmpty() && desc.isEmpty() && android.os.Build.VERSION.SDK_INT >= 26) {
+                    val hint = runCatching { node.hintText?.toString()?.trim().orEmpty() }
+                        .getOrDefault("")
+                    if (hint.isNotEmpty()) text = "p:$hint"
+                }
+                // v1.2.126：可勾选节点即使无文本也保留（详情页的 Switch 控件常无文本，
+                // 其标签在旁边的 TextView 上——过滤掉就看不到开关状态了）
+                if ((text.isNotEmpty() || desc.isNotEmpty() || clickable || node.isCheckable) &&
                     (!filterRestricted || when (filter) {
                         "clickable" -> clickable || editable
                         "editable" -> editable
@@ -751,6 +840,29 @@ class DshAccessibilityService : AccessibilityService() {
                         if (clickable) append('c')
                         if (scrollable) append('s')
                         if (editable) append('e')
+                        // v1.2.126：勾选状态（开关/复选框）——v=选中 o=未选中。
+                        // 此前开关状态在 dump 里完全不可见：① 验证只能靠帧差猜；
+                        // ② 场景记忆因"点击前后指纹相同"而反复命中同一动作（反复点开关）。
+                        if (node.isCheckable) append(if (node.isChecked) 'v' else 'o')
+                    }
+                    // 控件角色（v1.2.131，AI 体验反馈驱动）：实测 AI 把导航行
+                    // `d:深色主题 @969,1765 co` 误判成开关 → 点了没反应 → 4.4s
+                    // escalation。角色后缀让它第一刀切对。只标有区分价值的角色
+                    // （text/image 静默，避免每行加噪音）。
+                    val role = when {
+                        node.isCheckable -> "switch"
+                        node.isEditable -> "edit"
+                        else -> {
+                            val cn = node.className?.toString() ?: ""
+                            when {
+                                cn.contains("Button") -> "button"
+                                cn.contains("SeekBar") -> "slider"
+                                cn.contains("RecyclerView") || cn.contains("ListView") -> "list"
+                                cn.contains("ScrollView") -> "scroll"
+                                clickable -> "row"     // 可点击的非上述控件 = 导航行/行项目
+                                else -> ""
+                            }
+                        }
                     }
                     // 文本优先；无文本时用 desc 并标 d:
                     // ⚠️ v1.2.68 读屏瘦身（内置 AI 建议）：超长文本截断。
@@ -761,9 +873,33 @@ class DshAccessibilityService : AccessibilityService() {
                         desc.isNotEmpty() -> "d:" + desc.replace('\n', ' ')
                         else -> "-"
                     }.let { if (it.length > MAX_LABEL_CHARS) it.take(MAX_LABEL_CHARS) + "…(${it.length})" else it }
+                    if ((text.isNotEmpty() || desc.isNotEmpty()) && rect.centerY() > contentTop) {
+                        contentChars += label.length
+                    }
+                    // v1.2.126 实测修复：节点**部分可见**时中心坐标可能越界——
+                    // 「GET STARTED」节点中心 @540,2211 超出屏高 2209 → 点击落空
+                    // （dispatchGesture 仍返回 true，静默失败）。改用**可见区域中心**
+                    // （节点与屏幕求交后的中心），坐标必然落在屏内且仍在控件上。
+                    val vis = Rect(rect)
+                    val cx: Int
+                    val cy: Int
+                    if (vis.intersect(0, 0, resources.displayMetrics.widthPixels, rootHeight)) {
+                        cx = vis.centerX()
+                        cy = vis.centerY()
+                    } else {
+                        cx = rect.centerX()
+                        cy = rect.centerY()
+                    }
+                    // ⚠️ 括号必须显式加（v1.2.134 实测坑）：Kotlin 里
+                    // `a + if (x) "p" else "" + if (y) "q" else ""` 会被解析成
+                    // `a + if (x) "p" else ("" + if (y) "q" else "")` —— else 分支
+                    // 吞掉后续拼接，于是**所有带 flags 的节点都丢了 role**
+                    // （AI 实测反馈「dump 里没有 [switch] 标记」的根因）。
+                    rows.add(ConvRow(label, cx, cy, vis.width(), vis.height(), flags, text.isNotEmpty() || desc.isNotEmpty()))
                     lines.add(
-                        "$count $label @${rect.centerX()},${rect.centerY()}" +
-                            if (flags.isNotEmpty()) " $flags" else "",
+                        "$count $label @$cx,$cy" +
+                            (if (flags.isNotEmpty()) " $flags" else "") +
+                            (if (role.isNotEmpty()) " [$role]" else ""),
                     )
                     count++
                 }
@@ -771,10 +907,74 @@ class DshAccessibilityService : AccessibilityService() {
             for (i in 0 until node.childCount) walk(node.getChild(i))
         }
         walk(rootInActiveWindow)
-        sb.append("${resources.displayMetrics.widthPixels}x$rootHeight ${lines.size}nodes\n")
+        // ---- v1.2.150 图标识别（用户需求：至少识别齿轮=设置、放大镜=搜索）----
+        // 无标签的可点击小区域 → 截一帧做 NCC 模板匹配（36 个 Material 官方图标）。
+        // 命中补 `=名称`（识别）；未命中的留给下面的 `~最近文本`（空间推断）兜底。
+        // 成本：仅在有候选图标时截屏一次（~50ms）+ 每图标 ~3ms 匹配。
+        runCatching {
+            val cands = ArrayList<Pair<Int, Rect>>()
+            for (i in rows.indices) {
+                val r = rows[i]
+                if (!r.hasText && r.flags.contains('c') &&
+                    r.w in IconMatcher.MIN_ICON_PX..IconMatcher.MAX_ICON_PX &&
+                    r.h in IconMatcher.MIN_ICON_PX..IconMatcher.MAX_ICON_PX
+                ) {
+                    cands.add(i to Rect(r.x - r.w / 2, r.y - r.h / 2, r.x + r.w / 2, r.y + r.h / 2))
+                }
+            }
+            val elapsed = System.nanoTime() / 1_000_000 - tDumpStart
+            if (cands.isNotEmpty() && elapsed < 900L) {
+                // 剩余预算 ~1.1s：截图上限 700ms（超时即放弃图标，保住本次读屏）
+                val shot = screenshotArgb(700L)
+                if (shot != null) {
+                    for ((idx, rect) in cands) {
+                        val hit = IconMatcher.identify(this, shot, rect) ?: continue
+                        lines[idx] = lines[idx] + " =" + hit.name
+                    }
+                }
+            }
+        }.onFailure { Log.w("DshA11y", "icon match failed: ${it.message}") }
+        // ---- v1.2.142 图标上下文关联 ----
+        // 无文本且可点击的节点（图标）→ 用最近的文本节点作**推断标签**，标为
+        // `~标签`（波浪号 = 推断而非真实文本）。同行优先（y 距离加权 2x），
+        // 距离 < 160px 才关联——避免给孤立图标安上无关标签。
+        val textRows = rows.filter { it.hasText }
+        if (textRows.isNotEmpty()) {
+            for (i in rows.indices) {
+                val r = rows[i]
+                if (r.hasText || !r.flags.contains('c')) continue
+                val near = textRows.minByOrNull { t ->
+                    kotlin.math.abs(t.y - r.y) * 2 + kotlin.math.abs(t.x - r.x)
+                } ?: continue
+                if (kotlin.math.abs(near.y - r.y) < 160) {
+                    lines[i] = lines[i] + " ~" + near.label.removePrefix("d:").take(24)
+                }
+            }
+        }
+        // ---- v1.2.123 OCR 兜底 ----
+        // 无障碍节点树并非总有文字：OPPO/ColorOS 自带浏览器、部分 WebView、
+        // 自绘（Canvas/SurfaceView）界面**完全不暴露文本节点**（真机实测：
+        // 整个屏幕 0 个文本行）→ 从截图 OCR 补足，让云端与本地快速层
+        // 都能"看见"这些界面。结果缓存与节流冷却在 ScreenOcr 内部
+        // （takeScreenshot 有系统节流，不能每帧调用）。
+        var ocrInfo = ""
+        if (ocrFallback && filter == "all" && contentChars < OCR_MIN_TEXT_CHARS) {
+            val ocr = ScreenOcr.recognize(this, topSkip = OCR_TOP_SKIP)
+            if (ocr.blocks.isNotEmpty()) {
+                lines.addAll(ScreenOcr.toDumpLines(ocr.blocks, count))
+                ocrInfo = " ocr=${ocr.blocks.size}lines/${ocr.costMs}ms" + if (ocr.cached) "(cached)" else ""
+            } else if (ocr.unavailable) {
+                ocrInfo = " ocr=unavailable"
+            }
+        }
+        sb.append("${resources.displayMetrics.widthPixels}x$rootHeight ${lines.size}nodes$ocrInfo\n")
         lines.forEach { sb.append(it).append('\n') }
         return sb.toString()
     }
+
+    /** OCR 兜底触发阈值：**内容区**（屏幕 25% 高度以下）文本总字符低于此值
+     *  视为「节点树没有可用内容」——顶部 UI 壳的文字不计入（见 dumpScreenCompact）。 */
+    private val OCR_MIN_TEXT_CHARS = 40
 
     /**
      * 遍历活跃窗口可见节点，输出 JSON：
@@ -792,9 +992,11 @@ class DshAccessibilityService : AccessibilityService() {
      * 同一 UI 状态下稳定，可作点击定位的次优选择）；可选只输出可点击节点（省 token）。
      * @param clickableOnly true = 只输出可点击节点
      */
-    fun dumpScreenJson(filter: String = "all"): String {
+    fun dumpScreenJson(filter: String = "all", ocrFallback: Boolean = true): String {
         val arr = JSONArray()
         var count = 0
+        var contentChars = 0
+        val contentTop = rootHeight * 0.25
         val filterRestricted = filter != "all"
         fun walk(node: AccessibilityNodeInfo?) {
             if (node == null || count >= MAX_NODES) return
@@ -804,7 +1006,16 @@ class DshAccessibilityService : AccessibilityService() {
             if (visible) {
                 val text = node.text?.toString()?.trim().orEmpty()
                 val desc = node.contentDescription?.toString()?.trim().orEmpty()
-                if ((text.isNotEmpty() || desc.isNotEmpty() || node.isClickable) &&
+                // v1.2.153：空输入的 placeholder（见 compact dump 处说明）
+                val hint = if (text.isEmpty() && desc.isEmpty() &&
+                    android.os.Build.VERSION.SDK_INT >= 26
+                ) {
+                    runCatching { node.hintText?.toString()?.trim().orEmpty() }.getOrDefault("")
+                } else ""
+                if ((text.isNotEmpty() || desc.isNotEmpty()) && rect.centerY() > contentTop) {
+                    contentChars += text.length + desc.length
+                }
+                if ((text.isNotEmpty() || desc.isNotEmpty() || node.isClickable || node.isCheckable) &&
                     (!filterRestricted || when (filter) {
                         "clickable" -> node.isClickable
                         "editable" -> node.isEditable
@@ -815,13 +1026,20 @@ class DshAccessibilityService : AccessibilityService() {
                         put("index", count)
                         put("text", text)
                         put("desc", desc)
+                        put("hint", hint)      // v1.2.153：空输入的 placeholder
                         put("cls", node.className?.toString() ?: "")
                         put("rid", node.viewIdResourceName ?: "")
-                        put("x", rect.centerX())
-                        put("y", rect.centerY())
+                        // v1.2.126：部分可见节点的中心可能越界 → 用可见区域中心
+                        // （与 dumpScreenCompact 同判据；越界坐标点击会静默落空）
+                        val vis = Rect(rect)
+                        val onScreen = vis.intersect(0, 0, resources.displayMetrics.widthPixels, rootHeight)
+                        put("x", if (onScreen) vis.centerX() else rect.centerX())
+                        put("y", if (onScreen) vis.centerY() else rect.centerY())
                         put("w", rect.width())
                         put("h", rect.height())
                         put("clickable", node.isClickable)
+                        put("checkable", node.isCheckable)
+                        put("checked", node.isChecked)
                         // Compose 的滚动容器常不置 isScrollable，用滚动 action 探测兜底
                         put("scrollable", node.isScrollable ||
                             node.actionList.any { a ->
@@ -836,6 +1054,32 @@ class DshAccessibilityService : AccessibilityService() {
             for (i in 0 until node.childCount) walk(node.getChild(i))
         }
         walk(rootInActiveWindow)
+        // ---- v1.2.123 OCR 兜底（与 dumpScreenCompact 同判据）----
+        // verify 的 anyText/checkedText 用本函数读屏；若只有 compact 版带 OCR，
+        // 会出现「pick 能用 OCR 文本、verify 却永远匹配不到」——实测 canvas
+        // 场景点击成功但验证必然失败（无节点树应用同理）。
+        if (ocrFallback && filter == "all" && contentChars < OCR_MIN_TEXT_CHARS) {
+            val ocr = ScreenOcr.recognize(this, topSkip = OCR_TOP_SKIP)
+            for (b in ocr.blocks) {
+                arr.put(JSONObject().apply {
+                    put("index", count)
+                    put("text", b.text)
+                    put("desc", "")
+                    put("cls", "ocr")
+                    put("rid", "")
+                    put("x", b.cx)
+                    put("y", b.cy)
+                    put("w", b.right - b.left)
+                    put("h", b.bottom - b.top)
+                    put("clickable", true)
+                    put("checkable", false)
+                    put("checked", false)
+                    put("scrollable", false)
+                    put("editable", false)
+                })
+                count++
+            }
+        }
         return JSONObject()
             .put("ok", true)
             .put("width", resources.displayMetrics.widthPixels)
@@ -878,6 +1122,98 @@ class DshAccessibilityService : AccessibilityService() {
      * 同步等待结果（AgentBridge 的请求线程阻塞在此，默认超时 3s）。
      * 返回 null = 平台不支持或截图失败。
      */
+    /**
+     * 截图为 ARGB 字节数组（v1.2.122，Framer 专用）—— 跳过 PNG 压缩与 base64 编码。
+     *
+     * 帧差验证每秒可能采几十帧，走 screenshotBase64() 那条路（PNG 压缩 + base64 +
+     * 调用方再解码回 ARGB）会把大部分时间花在无谓的编解码上。这里直接出
+     * IntArray（ARGB_8888 逐像素），调用方自行降采样。
+     *
+     * @return (像素数组, 宽, 高)；失败返回 null
+     */
+    fun screenshotArgb(timeoutMs: Long = 5000L): Triple<IntArray, Int, Int>? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        // v1.2.156 实测修复：系统对 takeScreenshot 有节流（errorCode=3
+        // INTERVAL_TIME_SHORT）。实测**间隔 5 秒仍被拒**——因为一次读屏里 OCR 与
+        // 图标识别各截一帧、叠加其它消费者，节流窗口被持续占用。此前一拒就放弃，
+        // 于是 OCR 长期显示 `ocr=unavailable`（画布/无文本界面等于读瞎）。
+        // 改为短退避重试：失败等 450ms 再来（最多 3 次），把"偶发被拒"与
+        // "真的不可用"分开。
+        //
+        // 更进一步（同一批实测）：节流的根因是**一次读屏里有两个消费者**
+        // （OCR 与图标识别各截一帧），互相把配额吃掉 → 两边都撞 errorCode=3，
+        // 各付 450ms 退避。这里加 700ms 的"近期帧复用"：同一个 dump 里的第二次
+        // 取帧直接吃缓存，整次读屏只消耗一次系统配额。
+        val now = System.currentTimeMillis()
+        lastShotCache?.let { c ->
+            if (now - lastShotAt < SHOT_REUSE_MS) return c     // 复用帧：无需避让（已有帧里没有悬浮窗）
+        }
+        // ⚠️ v1.2.164（用户反馈"截图会带上我们自己的悬浮窗，遮挡 AI 视野"）：
+        // 截图前**临时隐藏**悬浮窗，截完恢复。悬浮窗是 app 自己的 UI，被截进去会让
+        // AI 把它当成页面内容（状态球/文字混进识别结果）→ 误判。
+        // 用 try/finally 保证任何异常路径都能恢复，绝不把用户的悬浮窗"吞掉"。
+        val svcForAvoid = instance
+        StatusOverlay.beginCaptureAvoid(svcForAvoid)
+        try {
+            repeat(3) { attempt ->
+                screenshotArgbOnce(timeoutMs)?.let {
+                    lastShotCache = it
+                    lastShotAt = System.currentTimeMillis()
+                    return it
+                }
+                if (attempt < 2) Thread.sleep(450L)
+            }
+            return null
+        } finally {
+            StatusOverlay.endCaptureAvoid(svcForAvoid)
+        }
+    }
+
+    /** 近期帧（见 screenshotArgb 顶部说明）：同一个 dump 内的第二次取帧复用它 */
+    @Volatile private var lastShotCache: Triple<IntArray, Int, Int>? = null
+    @Volatile private var lastShotAt = 0L
+    private val SHOT_REUSE_MS = 700L
+
+    private fun screenshotArgbOnce(timeoutMs: Long): Triple<IntArray, Int, Int>? {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var bmp: Bitmap? = null
+        val callback = object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                runCatching {
+                    val hw = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                    bmp = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                    hw?.recycle()
+                }
+                screenshot.hardwareBuffer.close()
+                latch.countDown()
+            }
+            override fun onFailure(errorCode: Int) {
+                // ⚠️ 诊断（v1.2.124 实测）：连续高频调用时 takeScreenshot 会因
+                // ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT(=3) 被系统节流拒绝——
+                // 这是"每帧截图"路线的根本障碍，正解是 MediaProjection 帧流。
+                Log.w("DshA11y", "screenshotArgb failed: errorCode=$errorCode " +
+                    "(3=INTERVAL_TIME_SHORT: throttled; 1=INTERNAL; 2=NO_ACCESSIBILITY_ACCESS; 4=INVALID_DISPLAY)")
+                latch.countDown()
+            }
+        }
+        // v1.2.164：截图前临时隐藏自己的悬浮窗（同 screenshotArgb，见其注释）
+        val svcForAvoid = instance
+        StatusOverlay.beginCaptureAvoid(svcForAvoid)
+        try {
+            takeScreenshot(android.view.Display.DEFAULT_DISPLAY, { it.run() }, callback)
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } finally {
+            StatusOverlay.endCaptureAvoid(svcForAvoid)
+        }
+        val bitmap = bmp ?: return null
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        bitmap.recycle()
+        return Triple(pixels, w, h)
+    }
+
     fun screenshotBase64(timeoutMs: Long = 3000L): Triple<Int, Int, String>? {
         if (Build.VERSION.SDK_INT < 30) return null
         val latch = CountDownLatch(1)
@@ -1164,8 +1500,103 @@ class DshAccessibilityService : AccessibilityService() {
         return best
     }
 
-    private fun hasClickableAncestor(node: AccessibilityNodeInfo): Boolean {
-        var cur: AccessibilityNodeInfo? = node.parent
+    /**
+     * 双指捏合缩放（v1.2.148）：地图/图片缩放——无障碍 dispatchGesture 多笔划。
+     * @param scale >1 放大（双指外扩），<1 缩小（内收）
+     */
+    fun dispatchPinch(scale: Float): Boolean {
+        if (Build.VERSION.SDK_INT < 24) return false
+        val (w, h) = screenSize()
+        val cx = w / 2f
+        val cy = h / 2f
+        val startGap = minOf(w, h) * 0.15f
+        val endGap = (startGap * scale).coerceIn(minOf(w, h) * 0.05f, minOf(w, h) * 0.45f)
+        val path1 = android.graphics.Path().apply {
+            moveTo(cx - startGap, cy); lineTo(cx - endGap, cy)
+        }
+        val path2 = android.graphics.Path().apply {
+            moveTo(cx + startGap, cy); lineTo(cx + endGap, cy)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path1, 0, 320))
+            .addStroke(GestureDescription.StrokeDescription(path2, 0, 320))
+            .build()
+        markSelfAction()
+        expectSelfTouch()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * 按 resource-id 找节点（v1.2.141，AI 体验反馈「更多无障碍功能」）。
+     * 比文本定位更稳：不受界面语言、OCR 误差、同文本重复的影响，
+     * UI 改版时 id 通常也不变。默认后缀/包含匹配（完整 rid 很长）。
+     */
+    fun findNodeById(rid: String, exact: Boolean = false): AccessibilityNodeInfo? {
+        val q = rid.trim()
+        if (q.isEmpty()) return null
+        val root = rootInActiveWindow ?: return null
+        var hit: AccessibilityNodeInfo? = null
+        fun walk(node: AccessibilityNodeInfo?) {
+            if (hit != null || node == null) return
+            val id = node.viewIdResourceName ?: ""
+            if (id.isNotEmpty() && (if (exact) id == q else id.endsWith(q) || id.contains(q))) {
+                val r = Rect().also { node.getBoundsInScreen(it) }
+                if (r.width() > 0 && r.height() > 0) { hit = node; return }
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i))
+        }
+        walk(root)
+        return hit
+    }
+
+    /** 按 id 点击（v1.2.141）：先试节点 ACTION_CLICK，回退坐标注入。返回 (x, y, via) */
+    fun tapById(rid: String): Triple<Int, Int, String>? {
+        val node = findNodeById(rid) ?: return null
+        val r = Rect().also { node.getBoundsInScreen(it) }
+        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return Triple(r.centerX(), r.centerY(), "action")
+        }
+        return if (dispatchTapRect(r)) Triple(r.centerX(), r.centerY(), "tap") else null
+    }
+
+    /** 滚动到边界（v1.2.141）：优先 SCROLL action；无明确容器（Compose/自绘）回退滑动手势。返回执行次数 */
+    fun scrollToEdge(forward: Boolean, maxSwipes: Int = 12): Int {
+        val root = rootInActiveWindow ?: return 0
+        val scroller = findScrollable(root)
+        var n = 0
+        if (scroller != null) {
+            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            repeat(maxSwipes) {
+                if (!scroller.performAction(action)) return n
+                n++
+                Thread.sleep(120)
+            }
+            return n
+        }
+        // v1.2.141 兜底（实测：设置页等场景 findScrollable 返回 null，swipes=0 无效果）：
+        // 用滑动手势滚到边界。惯性滚动可能过头，由调用方用 verify 复核。
+        val (w, h) = screenSize()
+        val yFrom = if (forward) h * 0.7f else h * 0.3f
+        val yTo = if (forward) h * 0.2f else h * 0.8f
+        repeat(maxSwipes) {
+            val ok = dispatchSwipe(w / 2f, yFrom, w / 2f, yTo, 280L)
+            if (!ok) return n
+            n++
+            Thread.sleep(150)
+        }
+        return n
+    }
+
+    // ---- 通知事件缓存（v1.2.141）：桥的 /notif 读取用 ----
+    private val notifLog = java.util.ArrayDeque<String>()
+    private val notifLock = Any()
+
+    /** 最近的通知条目（"包名: 文本 | 文本"，新到旧） */
+    fun recentNotifications(limit: Int = 10): List<String> =
+        synchronized(notifLock) { notifLog.take(limit) }
+
+    private fun hasClickableAncestor(node: AccessibilityNodeInfo): Boolean {        var cur: AccessibilityNodeInfo? = node.parent
         while (cur != null) {
             if (cur.isClickable) return true
             cur = cur.parent
@@ -1240,7 +1671,13 @@ class DshAccessibilityService : AccessibilityService() {
             // 限制在屏幕内，避免抖出边界导致手势无效
             val (sw, sh) = screenSize()
             (x + dx).coerceIn(1f, sw - 2f) to (y + dy).coerceIn(1f, sh - 2f)
-        } else x to y
+        } else {
+            // v1.2.126：jitter=0 时同样钳制——越界坐标的手势被系统静默丢弃
+            // （实测：节点中心 @540,2211 超出屏高 2209，dispatchGesture 返回
+            // true 但实际没点中）。钳进屏内至少让点击落在控件可见部分。
+            val (sw, sh) = screenSize()
+            x.coerceIn(1f, sw - 2f) to y.coerceIn(1f, sh - 2f)
+        }
         val path = Path().apply { moveTo(jx, jy) }
         // 按压时长也在人类范围内抖动（真实点按约 50–130ms，恒定 60ms 是机器特征）
         val duration = if (jitterPx > 0) kotlin.random.Random.nextLong(55L, 135L) else 60L
@@ -1278,6 +1715,69 @@ class DshAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
+        // ⚠️ v1.2.152 审查修复（P1）：此前漏打自身标记——注入的手势产生
+        // TYPE_TOUCH_INTERACTION_START 但无 credit 可核销 → batch 的
+        // abortOnInterference 误判"用户接管"、/batch 响应误报 userInterference。
+        markSelfAction()
+        expectSelfTouch()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * 拟人化滑动（v1.2.149，用户需求「模拟真实人类操作」）。
+     *
+     * 真人滑动的三个特征，直线匀速 swipe 一个都没有（机器特征明显）：
+     *  ① **弧线**——手指划过的路径不是直线（贝塞尔控制点垂直偏移，方向随机）；
+     *  ② **变速**——起手加速、收手减速（GestureDescription 沿路径匀速移动，
+     *     故把路径点按 easeInOut 非均匀分布 = 速度曲线）；
+     *  ③ **起止抖动**——落点/抬点不精确（±jitter 像素），途中还有手部微抖。
+     *
+     * 用途：让自动化交互更接近真人手感（滑动列表、翻页）；需要像素级精确的
+     * 拖拽用 human=false 走 dispatchSwipe。
+     */
+    fun dispatchSwipeHuman(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        durationMs: Long = 300L,
+        curvature: Float = 0.06f,
+        jitterPx: Int = 10,
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < 24) return false
+        val (sw, sh) = screenSize()
+        val rnd = kotlin.random.Random
+        // ① 起止抖动（真人落点不精确）
+        val sx = (x1 + rnd.nextInt(-jitterPx, jitterPx + 1)).coerceIn(1f, sw - 2f)
+        val sy = (y1 + rnd.nextInt(-jitterPx, jitterPx + 1)).coerceIn(1f, sh - 2f)
+        val ex = (x2 + rnd.nextInt(-jitterPx, jitterPx + 1)).coerceIn(1f, sw - 2f)
+        val ey = (y2 + rnd.nextInt(-jitterPx, jitterPx + 1)).coerceIn(1f, sh - 2f)
+        // ② 弧线控制点（沿路径垂直方向偏移，方向随机）
+        val dx = ex - sx
+        val dy = ey - sy
+        val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(1f)
+        val perpX = -dy / len
+        val perpY = dx / len
+        val bulge = len * curvature * (if (rnd.nextBoolean()) 1f else -1f)
+        val ctrlX = (sx + ex) / 2f + perpX * bulge
+        val ctrlY = (sy + ey) / 2f + perpY * bulge
+        // ③ 变速：二次贝塞尔采样 + easeInOut 时间映射（点密度 = 速度）
+        val path = android.graphics.Path()
+        val steps = 24
+        for (i in 0..steps) {
+            val t = i.toFloat() / steps
+            val te = t * t * (3f - 2f * t)     // smoothstep：慢-快-慢
+            val mt = 1f - te
+            val px = mt * mt * sx + 2f * mt * te * ctrlX + te * te * ex
+            val py = mt * mt * sy + 2f * mt * te * ctrlY + te * te * ey
+            val nx = px + rnd.nextInt(-1, 2)
+            val ny = py + rnd.nextInt(-1, 2)
+            if (i == 0) path.moveTo(nx, ny) else path.lineTo(nx, ny)
+        }
+        // ④ 时长随机（真人的滑动时长有分布）
+        val dur = (durationMs + rnd.nextLong(-70L, 110L)).coerceIn(120L, 2000L)
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, dur))
+            .build()
+        markSelfAction()
+        expectSelfTouch()
         return dispatchGesture(gesture, null, null)
     }
 
@@ -1288,6 +1788,8 @@ class DshAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
+        markSelfAction()
+        expectSelfTouch()
         return dispatchGesture(gesture, null, null)
     }
 
@@ -1311,6 +1813,23 @@ class DshAccessibilityService : AccessibilityService() {
     // 为什么必须有：此前只有 tap/swipe/key，AI 能点开搜索框却打不了字 ——
     // 搜索、登录、发消息、填表全部卡死在这一步（用户反馈「无障碍基本用不了」
     // 的头号原因）。文字输入是自动化闭环的最后一块拼图。
+
+    /**
+     * 触发软键盘「回车/前往」（v1.2.123）。
+     *
+     * 为什么需要：浏览器地址栏、搜索框、表单输入后必须**提交**——此前只能
+     * 靠点击建议项或找"前往"按钮，通用性差（本地闭环实测：Chrome 输入网址后
+     * 无按钮可点，只能走建议项）。ACTION_IME_ENTER 是 API 30+ 的标准无障碍
+     * 能力，作用于当前输入焦点节点，等价于按软键盘的回车键。
+     */
+    fun pressEnter(): Boolean {
+        if (Build.VERSION.SDK_INT < 30) return false
+        val root = rootInActiveWindow ?: return false
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: root
+        // 注意：常量在公开 API 里叫 AccessibilityAction.ACTION_IME_ENTER
+        // （AccessibilityNodeInfo.ACTION_IME_ENTER 是 @hide 隐藏 API，编译不过）
+        return focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+    }
 
     /**
      * 向当前聚焦的可编辑节点写入文本。
@@ -1427,15 +1946,27 @@ class DshAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return null
         val scroller = findScrollable(root) ?: return null
 
+        // v1.2.155 实测提速（基准：scroll_find 单步 8.6-9.9s，占长任务 57%）：
+        // 旧实现每轮 `ACTION_SCROLL_FORWARD` + 固定 sleep —— 系统默认步长很小
+        // （长列表要滑十几次），加上每轮固定等待，一次"滚动查找"要十秒。
+        // 改为①**真手势**、一次覆盖滚动区约 75% 高度（一次顶四五次系统滚动）；
+        // ②**自适应等待**：滑完先抢读（命中即走），只在没命中时才等落定后复读。
+        val vis = Rect().also { scroller.getBoundsInScreen(it) }
+        if (vis.width() <= 0 || vis.height() <= 0) return null
+        val cx = vis.centerX().toFloat().coerceIn(60f, (screenSize().first - 60).toFloat())
+        val nearY = (vis.top + vis.height() * 0.78f).coerceIn(80f, (screenSize().second - 80).toFloat())
+        val farY = (vis.top + vis.height() * 0.25f).coerceIn(80f, (screenSize().second - 80).toFloat())
         repeat(maxSwipes.coerceIn(1, 30)) {
-            val action = if (forward) {
-                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-            } else {
-                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            val ok = if (forward) dispatchSwipeHuman(cx, nearY, cx, farY, 240L)
+            else dispatchSwipeHuman(cx, farY, cx, nearY, 240L)
+            if (!ok) return null
+            // 抢读：滚动刚落地目标常已在树里（多数轮次命中，省掉整套等待）
+            repeat(4) {
+                findNodeByText(q)?.let { return Rect().also { rr -> it.getBoundsInScreen(rr) } }
+                Thread.sleep(70)
             }
-            if (!scroller.performAction(action)) return null
-            // 等滚动动画结束再读节点树（否则读到中间态）
-            Thread.sleep(SCROLL_SETTLE_MS)
+            // 未命中：等动画落定后再读一次（避免读到中间态而漏过目标）
+            Thread.sleep(140)
             findNodeByText(q)?.let { return Rect().also { rr -> it.getBoundsInScreen(rr) } }
         }
         return null
@@ -1506,9 +2037,17 @@ class DshAccessibilityService : AccessibilityService() {
         val deadline = System.currentTimeMillis() + timeoutMs
         var last = knownSignature ?: ""
         var sameCount = if (knownSignature != null) 1 else 0
+        var emptyReads = 0
         while (System.currentTimeMillis() < deadline) {
             val sig = treeSignature()
-            if (sig.isNotEmpty() && sig == last) {
+            if (sig.isEmpty()) {
+                // 节点树不可用（WebView 不暴露节点 / 自绘界面）：签名恒空，
+                // 「连续不变」永远无法成立 —— 此前每次动作前白等满超时
+                // （真机实测：浏览器类界面 900ms × 每步）。连续两次空读
+                // 即判定节点路径无意义，立即返回让调用方走帧差兜底。
+                emptyReads++
+                if (emptyReads >= 2) return false
+            } else if (sig == last) {
                 sameCount++
                 if (sameCount >= stableReads) return true
             } else {
@@ -1520,8 +2059,52 @@ class DshAccessibilityService : AccessibilityService() {
         return false
     }
 
-    /** 当前前台应用包名（供调用方确认「是否还在目标界面」） */
-    fun foregroundPackage(): String? = rootInActiveWindow?.packageName?.toString()
+    /**
+     * 当前前台应用包名（供调用方确认「是否还在目标界面」）。
+     *
+     * ⚠️ v1.2.146 实测修正：此前只用 `rootInActiveWindow` —— 它是**同步 IPC**，
+     * 页面加载/重绘期间会阻塞甚至超时（用户实测：Chrome 明明已在前台，
+     * verify.foregroundPkg 却判定失败、白等 7 秒）。改三级策略：
+     *  ① `windows` 里 active 窗口的包名（较轻）；
+     *  ② `rootInActiveWindow`（回退）；
+     *  ③ 上次成功的值（避免瞬时读取失败造成误判）。
+     */
+    fun foregroundPackage(): String? {
+        // ⚠️ 只取**应用类型**窗口——实测教训：Chrome 地址栏激活时输入法窗口
+        // 也是 isActive，直接取 active 会拿到 com.google.android.inputmethod.*
+        // → verify.foregroundPkg 持续误判（25 次轮询全失败）。
+        //
+        // v1.2.152 实测修复：**系统对话框也是应用窗口**。Chrome 弹「没有响应/关闭
+        // 应用/等待」的 ANR 框时，窗口列表顶部是 package=`android` 的对话框窗口，
+        // 于是 foregroundPackage() 返回 "android" —— 调用方的
+        // {"foregroundPkg":"com.android.chrome"} 会把整个预算耗在失败上
+        // （实测 8s 全灭，而 Chrome 页面就在对话框底下活着），AI 拿到 "android"
+        // 也完全无从下手。权限弹窗同理。这类"系统壳层"不是用户眼里的前台应用，
+        // 跳过它取下面真正的前台应用；ism 壳层下面确实没有应用时才回落。
+        val appPkgs = runCatching {
+            windows.filter {
+                it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+            }.mapNotNull { w -> runCatching { w.root?.packageName?.toString() }.getOrNull() }
+        }.getOrNull().orEmpty()
+        val fromWindows = appPkgs.firstOrNull { it.isNotBlank() && it !in SYSTEM_SHELL_PKGS }
+            ?: appPkgs.firstOrNull { it.isNotBlank() }
+        if (!fromWindows.isNullOrBlank()) { lastFgPkg = fromWindows; return fromWindows }
+        val fromRoot = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+        if (!fromRoot.isNullOrBlank() && fromRoot !in SYSTEM_SHELL_PKGS) {
+            lastFgPkg = fromRoot; return fromRoot
+        }
+        return lastFgPkg
+    }
+
+    /** 系统壳层包名：ANR/崩溃对话框、系统 UI、权限弹窗——不是"用户眼里的前台应用" */
+    private val SYSTEM_SHELL_PKGS = setOf(
+        "android",
+        "com.android.systemui",
+        "com.android.permissioncontroller",
+        "com.google.android.permissioncontroller",
+    )
+
+    @Volatile private var lastFgPkg: String? = null
 
     /** 屏幕尺寸（供坐标换算/比例点击） */
     fun screenSize(): Pair<Int, Int> =

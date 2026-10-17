@@ -205,4 +205,51 @@ object PluginCenter {
             onDone(ok, msg)
         }, "dsh-plugin-install").apply { isDaemon = true; start() }
     }
+
+    /**
+     * 卸载插件（v1.2.120）—— dsh plugin --profile web remove <pkg>。
+     *
+     * dsh plugin 转发给 pnpm（实测 --help 显示 pnpm 命令表），故卸载即
+     * `pnpm remove`。此前插件中心只能装不能卸（主人反馈），装错/不想要的
+     * 插件只能靠 CLI 手工处理。
+     */
+    fun uninstall(ctx: Context, pkg: String, onDone: (Boolean, String) -> Unit) {
+        Thread({
+            var ok = false
+            var msg = "?"
+            try {
+                val node = EngineConfig.nodeBin(ctx)
+                val entry = EngineConfig.dshEntry(ctx)
+                val env = EngineConfig.buildEnv(ctx, EngineConfig.DEFAULT_PORT)
+                val pb = ProcessBuilder(
+                    node.absolutePath, "--expose-internals", entry.absolutePath,
+                    "plugin", "--profile", "web", "remove", pkg,
+                )
+                pb.environment().clear()
+                env.forEach { kv ->
+                    val i = kv.indexOf('=')
+                    if (i > 0) pb.environment()[kv.substring(0, i)] = kv.substring(i + 1)
+                }
+                val p = pb.start()
+                val out = p.inputStream.readBytes()
+                val err = p.errorStream.readBytes()
+                if (p.waitFor(120, TimeUnit.SECONDS)) {
+                    if (p.exitValue() == 0) {
+                        ok = true
+                        msg = String(out, Charsets.UTF_8).trim().take(300)
+                    } else {
+                        msg = String(err, Charsets.UTF_8).trim().take(300)
+                            .ifEmpty { "exit=${p.exitValue()}" }
+                    }
+                } else {
+                    p.destroy()
+                    msg = "plugin uninstall timed out (120s)"
+                }
+            } catch (e: Exception) {
+                msg = e.message ?: "uninstall failed"
+            }
+            Log.i(TAG, "uninstall $pkg -> ok=$ok: $msg")
+            onDone(ok, msg)
+        }, "dsh-plugin-uninstall").apply { isDaemon = true; start() }
+    }
 }

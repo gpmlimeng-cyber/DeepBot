@@ -1,0 +1,230 @@
+/**
+ * [dsh-android] `fast_mode` 工具插件（v1.2.166，用户要求「直接做成内置插件」）。
+ *
+ * ## 为什么从 shell 闸门改成工具插件
+ * 最初做成 `fast` 闸门脚本（AI 敲 shell 命令）。用户实测：AI **不会主动用** ——
+ * 因为它是 shell 命令、藏在 seed 说明里，模型要先"想起"再敲命令；
+ * 而**注册成工具**后它会出现在模型的工具列表里，伴随任务型对话自然被选中。
+ *
+ * ## 它做什么
+ * 无障碍操作（读屏 → 点按 → 验证）的每一步都走一次完整云端推理，慢；而这些
+ * 步骤不需要思考（路径早已规划好）。打开 fast 后，本插件在**每一步**把
+ * reasoningEffort 置为 off → 不再付思考成本；关闭即恢复常规对话。
+ *
+ * 工具：`fast_mode(action: "on" | "off" | "status")`
+ * 状态存在 `$DSH_HOME/fast-mode` 标记文件 → 跨进程生效（含 daemon 子进程）、
+ * 不需重启、幂等，且与遗留的 `fast` 闸门完全兼容（同一份标记）。
+ *
+ * ## 为什么不做成纯内存状态
+ * daemon 与主会话是不同的进程；文件标记是最简单可靠的共享方式。
+ * 1.5s 缓存避免每一步都碰磁盘（agent/request 钩子每步都跑）。
+ *
+ * ## 安全阀
+ * 开关带 **30 分钟 TTL**：超过后自动失效（防止"忘了关"让后续任务全程无思考）。
+ *
+ * @module dsh-android-fast-mode
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+
+const name = "android-fast-mode";
+
+/** 需要 tools 服务来注册工具；agent 钩子本身不额外依赖。 */
+const inject = ["tools"];
+
+/**
+ * 动态加载 `@deepseek-ai/dsh-tools`（v1.2.168 实测修复）。
+ *
+ * ⚠️ 不能写静态 `import { defineTool } from "@deepseek-ai/dsh-tools"`：
+ * 本插件位于 `engine/android-plugins/`，**不在 node 的模块解析链上**
+ * （engine/ 下没有 node_modules），裸包名解析必然失败 →
+ * 引擎日志 `android-fast-mode: failed to import` → **工具从未注册**
+ * （实测：AI 因此完全没有 fast_mode 可用）。
+ *
+ * 实测结论：裸包名不可用（NODE_PATH 对 ESM 无效），但**绝对路径可用**
+ * （`…/engine/lib/node_modules/@deepseek-ai/dsh-tools/lib/index.js` 导入成功）。
+ * 这里从插件自身位置推算 engine 根，再按绝对路径动态 import。
+ */
+async function loadDefineTool() {
+  // 本文件在 <engine>/android-plugins/fast-mode.mjs → engine 根是上一级
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const engineRoot = path.resolve(here, "..");
+  const candidates = [
+    path.join(engineRoot, "lib/node_modules/@deepseek-ai/dsh-tools/lib/index.js"),
+    path.join(engineRoot, "node_modules/@deepseek-ai/dsh-tools/lib/index.js"),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) {
+        const m = await import(pathToFileURL(c).href);
+        if (typeof m.defineTool === "function") return m.defineTool;
+      }
+    } catch { /* try next */ }
+  }
+  return void 0;
+}
+
+/** 标记文件（与 gates/fast 约定一致）。 */
+const MARKER_NAME = "fast-mode";
+
+/** 开关自动失效时长：防「开了忘了关」（用户反馈的真实风险）。 */
+const TTL_MS = 30 * 60 * 1000;
+
+/** 钩子里的状态缓存窗口（agent/request 每步都跑，不宜每步 statSync）。 */
+const CACHE_MS = 1500;
+
+const DESCRIPTION = [
+  "Toggle FAST MODE for accessibility / UI-automation work on this Android device.",
+  "",
+  "WHY: every step of a UI task (read screen -> tap -> verify) otherwise pays a full",
+  "cloud reasoning round trip, while the path is already planned; thinking per",
+  "step only adds seconds. With fast mode ON the engine skips reasoning on each",
+  "step, so multi-step UI work runs several times faster.",
+  "",
+  "WHEN: turn it ON right before a multi-step UI task (anything that will read the",
+  "screen and act repeatedly, including delegating to the planner daemon). Turn it",
+  "OFF as soon as that task is finished. Use \"status\" to check.",
+  "",
+  "IMPORTANT: do NOT leave it on. Coding, writing, analysis and any task that",
+  "benefits from deliberation need thinking. It auto-expires after 30 minutes as a",
+  "safety net.",
+].join("\n");
+
+/** 工具结果的人类可读渲染（模型与 UI 都会读它） */
+function renderFastMode(v) {
+  if (!v || typeof v !== "object") return String(v);
+  if (v.ok !== true) return "fast_mode failed: " + (v.error || "unknown error");
+  if (v.fast === true) {
+    return "Fast mode is ON" +
+      (v.elapsedMinutes ? " (on for " + v.elapsedMinutes + " min)" : "") +
+      (v.autoExpiresInMinutes ? ", auto-expires in " + v.autoExpiresInMinutes + " min" : "") +
+      ". Per-step reasoning is skipped — remember to turn it off when the UI task is done.";
+  }
+  return "Fast mode is OFF — normal mode (thinking on).";
+}
+
+/** 读标记：返回 {on, ageMs} —— 超过 TTL 视为已失效并顺手清理。 */
+function readMarker(marker) {
+  if (!marker) return { on: false, ageMs: 0 };
+  try {
+    const st = fs.statSync(marker);
+    const ageMs = Date.now() - st.mtimeMs;
+    if (ageMs > TTL_MS) {
+      try { fs.unlinkSync(marker); } catch {}
+      return { on: false, ageMs };
+    }
+    return { on: true, ageMs };
+  } catch {
+    return { on: false, ageMs: 0 };
+  }
+}
+
+/**
+ * 挂载：注册 `fast_mode` 工具 + 每步读标记来关思考。
+ * @param ctx - 插件上下文（需 tools 服务）。
+ */
+async function apply(ctx) {
+  const home = process.env.DSH_HOME || "";
+  const marker = home ? path.join(home, MARKER_NAME) : "";
+
+  // ---- 每步：fast 模式下把 reasoningEffort 置为 off ----
+  let cached = false;
+  let cachedAt = 0;
+  const isFast = () => {
+    if (!marker) return false;
+    const now = Date.now();
+    if (now - cachedAt < CACHE_MS) return cached;
+    cached = readMarker(marker).on;
+    cachedAt = now;
+    return cached;
+  };
+
+  ctx.on("agent/request", async (payload, next) => {
+    const proposed = await next();
+    if (proposed === void 0) return proposed;
+    if (!isFast()) return proposed;              // 常规模式：一字不改
+    return { ...proposed, reasoningEffort: "off" };
+  });
+
+  // ---- 工具：让模型自己开关（比 shell 命令更容易被选中）----
+  // defineTool 动态加载（见 loadDefineTool 说明）；失败则只保留钩子能力，
+  // 并明确记一条日志，避免"工具没注册却无人知晓"（实测踩坑）。
+  const defineTool = await loadDefineTool();
+  if (defineTool === void 0) {
+    console.warn("[android-fast-mode] defineTool unavailable — tool NOT registered (hook still active)");
+    return;
+  }
+  ctx.tools.register(defineTool({
+    name: "fast_mode",
+    description: DESCRIPTION,
+    parameters: {
+      action: {
+        type: "string",
+        required: true,
+        enum: ["on", "off", "status"],
+        description:
+          "on = start fast mode (skip per-step reasoning) before a UI task; " +
+          "off = return to normal mode when the UI task is done; " +
+          "status = report the current state without changing it.",
+      },
+    },
+    // ⚠️ `output` 是 defineTool 的**必填**字段（v1.2.169 实测踩坑）：
+    // 缺它会在 defineTool 内部直接抛
+    //   TypeError: Cannot read properties of undefined (reading 'render')
+    // （源码：`const userRender = options.output.render`）→ 插件加载失败 → 工具没注册。
+    // 形状照抄引擎自带的 tool-goal：{ schema, render }。
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          ok: { type: "boolean", required: true },
+          fast: { type: "boolean" },
+          note: { type: "string" },
+          elapsedMinutes: { type: "number" },
+          autoExpiresInMinutes: { type: "number" },
+          error: { type: "string" },
+        },
+      },
+      render: (_args, value) => [{ type: "text", text: renderFastMode(value) }],
+    },
+    execute(args) {
+      const action = String((args && args.action) || "").toLowerCase();
+      if (action === "on") {
+        if (!marker) {
+          return Promise.resolve({ ok: false, error: "DSH_HOME is not set; cannot store fast mode" });
+        }
+        try {
+          fs.writeFileSync(marker, String(Date.now()));
+          cached = true; cachedAt = Date.now();
+        } catch (e) {
+          return Promise.resolve({ ok: false, error: "cannot write " + marker + ": " + (e && e.message) });
+        }
+        return Promise.resolve({
+          ok: true, fast: true,
+          note: "fast mode ON — subsequent steps skip reasoning. Turn it off (action=off) as soon as the UI task is done.",
+        });
+      }
+      if (action === "off") {
+        try { fs.unlinkSync(marker); } catch {}
+        cached = false; cachedAt = Date.now();
+        return Promise.resolve({ ok: true, fast: false, note: "fast mode OFF — back to normal (thinking on)." });
+      }
+      if (action === "status") {
+        const st = readMarker(marker);
+        return Promise.resolve({
+          ok: true,
+          fast: st.on,
+          elapsedMinutes: st.on ? Math.round(st.ageMs / 60000) : 0,
+          autoExpiresInMinutes: st.on ? Math.max(0, Math.round((TTL_MS - st.ageMs) / 60000)) : 0,
+        });
+      }
+      return Promise.resolve({ ok: false, error: "unknown action \"" + (args && args.action) + "\" (use on|off|status)" });
+    },
+  }));
+}
+
+export { apply, inject, name };

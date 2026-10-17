@@ -29,6 +29,30 @@ object FastPicker {
 
     private const val TAG = "FastPicker"
 
+    /**
+     * 命中统计（v1.2.124）——「本地判决 AI 到底用了多少」的可量化诊断。
+     * 真机反馈「装起来也很少用」后加的：没有数据就只能猜。
+     * 统计维度：pick 三层各自命中次数 + verify 语义救场次数。
+     * 进程内累计（不持久化），/local/status 输出。
+     */
+    object stats {
+        val exact = java.util.concurrent.atomic.AtomicInteger()
+        val semantic = java.util.concurrent.atomic.AtomicInteger()
+        val none = java.util.concurrent.atomic.AtomicInteger()
+        val verifySemantic = java.util.concurrent.atomic.AtomicInteger()
+
+        fun reset() {
+            exact.set(0); semantic.set(0); none.set(0); verifySemantic.set(0)
+        }
+
+        fun snapshot(): org.json.JSONObject = org.json.JSONObject().apply {
+            put("pickExact", exact.get())
+            put("pickSemantic", semantic.get())
+            put("pickNone", none.get())
+            put("verifySemanticHits", verifySemantic.get())
+        }
+    }
+
     /** 候选节点（来自无障碍层的紧凑 dump） */
     data class Candidate(
         val index: Int,
@@ -36,6 +60,12 @@ object FastPicker {
         val x: Int,
         val y: Int,
         val clickable: Boolean,
+        /** 可编辑（v1.2.153）：`[edit]` 节点 —— pick 的同档优先判据之一 */
+        val editable: Boolean = false,
+        /** 勾选状态（v1.2.126）：true=选中(v) false=未选中(o) null=不可勾选 */
+        val checked: Boolean? = null,
+        /** 控件角色（v1.2.131 行尾 [role]）：switch/row/button/edit/slider/list/scroll，"" = 未标 */
+        val role: String = "",
     )
 
     /** 选择结果 */
@@ -64,14 +94,29 @@ object FastPicker {
             val tail = l.substring(at + 1).trim()
             val sp = head.indexOf(' ')
             if (sp < 0) return@forEach
-            val idx = head.substring(0, sp).trim().toIntOrNull() ?: return@forEach
+            // 序号前缀 `o` = OCR 来源行（ScreenOcr 输出，见 dumpScreenCompact 兜底）；
+            // 纯数字 = 无障碍节点。两类都参与匹配与点击。
+            val idx = head.substring(0, sp).trim().removePrefix("o").toIntOrNull() ?: return@forEach
             val text = head.substring(sp + 1).trim()
             val comma = tail.indexOf(',')
             if (comma < 0) return@forEach
             val x = tail.substring(0, comma).trim().split(' ')[0].toIntOrNull() ?: return@forEach
             val y = tail.substring(comma + 1).trim().split(' ')[0].toIntOrNull() ?: return@forEach
             val clickable = tail.contains(" c") || tail.endsWith("c")
-            out.add(Candidate(idx, text, x, y, clickable))
+            // [edit] 角色或标志位里的 e（v1.2.153）
+            val editable = tail.contains("e") && (tail.contains(" e") || tail.contains("ce") ||
+                tail.contains("ec") || tail.contains("[edit]"))
+            // v1.2.131：角色标记（行尾 `[switch]`/`[row]`…）。⚠️ 必须先剥离再判
+            // flags —— `[row]` 含字母 o，混进 flagPart 会被误判成「未勾选」。
+            val role = Regex("\\[([a-z]+)\\]\\s*$").find(tail)?.groupValues?.get(1) ?: ""
+            // v1.2.126：勾选标记（flags 末尾的 v/o；坐标段是数字不含字母，安全）
+            val flagPart = tail.substringAfter(' ', "").substringBefore('[').trim()
+            val checked = when {
+                flagPart.contains('v') -> true
+                flagPart.contains('o') -> false
+                else -> null
+            }
+            out.add(Candidate(idx, text, x, y, clickable, editable, checked, role))
         }
         return out
     }
@@ -105,23 +150,32 @@ object FastPicker {
         } else candidates
 
         // ① 精确匹配（零延迟）：完全相同 → 包含 → 被包含
-        ordered.firstOrNull { it.text == want }?.let {
-            return Pick(it, "exact", 1.0)
+        // v1.2.153 实测修复（靶场发现）：**同档质量里优先「可交互」节点**。
+        // 反例：目标「搜索商品」同时命中 <label>搜索商品</label>（不可点，精确=1.0）
+        // 与空输入框 `p:搜索商品 输入商品名称… ce [edit]`（可点可编辑，包含=0.95）。
+        // 旧逻辑在精确档直接返回 label → 点击落到死标签上**静默无反应**，
+        // 而 AI 只看到"点了但没生效"，只能反复重试——真实世界里的表单标签
+        // 与输入框并排就是这种结构，命中率极低。
+        fun actable(c: Candidate) = c.clickable || c.editable
+        fun tier(pred: (Candidate) -> Boolean, score: Double): Pick? {
+            val hits = ordered.filter(pred)
+            if (hits.isEmpty()) return null
+            val pick = hits.firstOrNull(::actable) ?: hits.first()
+            stats.exact.incrementAndGet()
+            return Pick(pick, "exact", if (actable(pick)) score else score - 0.05)
         }
-        ordered.firstOrNull { it.text.contains(want, ignoreCase = true) }?.let {
-            return Pick(it, "exact", 0.95)
-        }
-        ordered.firstOrNull {
-            it.text.isNotBlank() && want.contains(it.text, ignoreCase = true) && it.text.length >= 2
-        }?.let {
-            return Pick(it, "exact", 0.9)
-        }
+        tier({ it.text == want }, 1.0)?.let { return it }
+        tier({ it.text.contains(want, ignoreCase = true) }, 0.95)?.let { return it }
+        tier({ it.text.isNotBlank() && want.contains(it.text, ignoreCase = true) && it.text.length >= 2 }, 0.9)
+            ?.let { return it }
 
         // ② 语义匹配（需本地嵌入服务；不可用时返回 none → 云端兜底）
         val emb = LocalEmbedder.bestMatch(ordered.map { it.text }, want)
         if (emb != null && emb.score >= SEMANTIC_MIN_SCORE) {
+            stats.semantic.incrementAndGet()
             return Pick(ordered[emb.index], "semantic", emb.score)
         }
+        stats.none.incrementAndGet()
         return Pick(null, "none", emb?.score ?: 0.0)
     }
 
@@ -197,7 +251,10 @@ object LocalEmbedder {
             val conn = java.net.URL("http://127.0.0.1:$PORT/v1/embeddings").openConnection()
             conn.doOutput = true
             conn.connectTimeout = 2000
-            conn.readTimeout = 4000
+            // v1.2.152：4s→2.5s。15MB 模型**热态**是毫秒级；冷加载应在 llama-server
+            // 启动时完成（LocalModel 有预热），不该让 verify 的预算替它买单——
+            // 实测一次冷调用吃掉 8s，把 timeoutMs=6000 的验证拖成 14s。
+            conn.readTimeout = 2500
             conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use { it.write(body.toByteArray()) }
             val resp = conn.getInputStream().bufferedReader().use { it.readText() }

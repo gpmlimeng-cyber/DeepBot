@@ -39,13 +39,40 @@ case "$1" in
     dsh_http GET "/screen?xml=1" || exit 2
     ;;
   shot)
-    # shot [--max N] ：最长边缩到 N 像素（省 base64 体积 + 省上下文）
-    if [ -n "$2" ] && [ "$2" = "--max" ]; then
-      dsh_http GET "/screenshot?max=$3" || exit 2
-    else
-      dsh_http GET /screenshot || exit 2
-    fi
+    # shot [--max N] [--save]
+    #   --max N  最长边缩到 N 像素（省体积）
+    #   --save   保存到文件只回路径（v1.2.138，**强烈推荐**）——base64 极吃
+    #            上下文，用 --save + read_image 按需读图；旧图自动清理（留最近12张）
+    case "$2" in
+      --save) dsh_http GET "/screenshot?save=1${3:+&max=${3#--max }}" || exit 2 ;;
+      --max)  dsh_http GET "/screenshot?max=$3" || exit 2 ;;
+      *)      dsh_http GET /screenshot || exit 2 ;;
+    esac
     ;;
+  tap-id)
+    # v1.2.141：按 resource-id 点击——比文本定位稳（不受界面语言/OCR 误差/同文本重复影响）。
+    # 参数是 rid 的后缀即可（完整 rid 很长，如 "action_bar_search"）。
+    [ -n "$2" ] || { echo "usage: scr tap-id <resource-id-suffix>" >&2; exit 64; }
+    dsh_http POST /tap-id "{\"id\":\"$(_dsh_json_escape "$2")\"}" || exit 2 ;;
+  wait-text)
+    # v1.2.141：等文本出现（默认）或消失（--gone）——比轮询 + 自己判更快，单次调用
+    shift
+    T="$1"; shift
+    GONE=false; TIMEOUT=8000
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --gone) GONE=true; shift ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$T" ] || { echo "usage: scr wait-text <text> [--gone] [--timeout ms]" >&2; exit 64; }
+    dsh_http POST /wait-text "{\"text\":\"$(_dsh_json_escape "$T")\",\"gone\":$GONE,\"timeoutMs\":$TIMEOUT}" || exit 2 ;;
+  scroll-top)    dsh_http POST /scroll-edge '{"direction":"top"}' || exit 2 ;;
+  scroll-bottom) dsh_http POST /scroll-edge '{"direction":"bottom"}' || exit 2 ;;
+  notif)
+    # v1.2.141：最近的通知（无障碍通知事件缓存）——验证"是否弹了通知"/读通知内容
+    dsh_http GET /notif || exit 2 ;;
   pkg)
     # 前台应用包名：确认"是否还在目标界面"（timeoutMs 取最小，只读一次）
     dsh_http POST /idle '{"timeoutMs":200}' || exit 2
@@ -117,18 +144,22 @@ case "$1" in
     # v1.2.120：本地快速决策 —— 给定目标描述，本地立刻判断该点哪个节点
     # 用法: scr pick <目标描述> [--tap] [--all]
     #   --tap  选中后直接点击（一次调用完成「判断+执行」）
-    #   --all  不限制可点击节点（默认只在 clickable 里选，降噪）
+    #   --all  不优先可点击节点（默认把 clickable 排前面 —— 注意这是**排序**
+    #          不是过滤：文本节点才是点击目标，过滤掉会让 pick 永远选不中）
     # 返回 via=exact（文本匹配，零延迟）/ semantic（本地嵌入，毫秒级）/ none（交云端）
     shift
-    P_TAP=false; P_ALL=false; P_TARGET=""
+    # v1.2.152 审查修复：--all 此前被解析成 false 且从未进入请求体——AI 传 --all
+    # 想"不限制可点击节点"，实际仍只搜 clickable 池，收到"屏幕上没这个文本"的
+    # 错误结论。现在 --all 真的放开过滤（clickableOnly=false）。
+    P_TAP=false; P_CLICKABLE=true; P_TARGET=""
     for a in "$@"; do
       case "$a" in
         --tap) P_TAP=true ;;
-        --all) P_ALL=false ;;
+        --all) P_CLICKABLE=false ;;
         *) [ -z "$P_TARGET" ] && P_TARGET="$a" ;;
       esac
     done
-    dsh_http POST /pick "{\"target\":\"$P_TARGET\",\"tap\":$P_TAP,\"clickableOnly\":true}" || exit 2
+    dsh_http POST /pick "{\"target\":\"$P_TARGET\",\"tap\":$P_TAP,\"clickableOnly\":$P_CLICKABLE}" || exit 2
     ;;
 
   changed)
@@ -141,17 +172,60 @@ case "$1" in
     # v1.2.113：本地动作库 —— 常见操作模板，零模型推理、毫秒执行。
     # 确定性操作（返回/主页/最近任务/通知栏/快捷设置/打开设置/短暂等待）
     # 不需要 AI 思考，一条命令直达；与 batch 配合进一步减少往返。
+    # v1.2.137：新增**设置页直达**（wifi/display/sound/about/...）——省 3-5 步/页面。
     case "$2" in
       back|home|recents|notifications|quick_settings)
         dsh_http POST /key "{\"action\":\"$2\"}" || exit 2 ;;
       open-settings)
-        dsh_http POST /launch '{"pkg":"com.android.settings"}' || exit 2 ;;
+        dsh_http POST /launch '{"package":"com.android.settings"}' || exit 2 ;;
+      wifi|bluetooth|display|sound|battery|apps|location|security|about|storage|network|date|accessibility|apps-default)
+        case "$2" in
+          wifi) ACT=WIFI_SETTINGS ;;
+          bluetooth) ACT=BLUETOOTH_SETTINGS ;;
+          display) ACT=DISPLAY_SETTINGS ;;
+          sound) ACT=SOUND_SETTINGS ;;
+          battery) ACT=BATTERY_SAVER_SETTINGS ;;
+          apps) ACT=APPLICATION_SETTINGS ;;
+          location) ACT=LOCATION_SOURCE_SETTINGS ;;
+          security) ACT=SECURITY_SETTINGS ;;
+          about) ACT=DEVICE_INFO_SETTINGS ;;
+          storage) ACT=INTERNAL_STORAGE_SETTINGS ;;
+          network) ACT=NETWORK_OPERATOR_SETTINGS ;;
+          date) ACT=DATE_SETTINGS ;;
+          accessibility) ACT=ACCESSIBILITY_SETTINGS ;;
+          apps-default) ACT=MANAGE_DEFAULT_APPS_SETTINGS ;;
+        esac
+        dsh_http POST /launch-intent "{\"action\":\"android.settings.$ACT\"}" || exit 2 ;;
+      app-info|app-notify|app-perms)
+        # v1.2.138：应用级设置直达（$3 = 包名）。app-info=应用信息页、
+        # app-notify=通知设置、app-perms=权限管理——省 AI 3-4 步/次。
+        PKG="$3"
+        [ -n "$PKG" ] || { echo "usage: scr macro $2 <package>" >&2; exit 64; }
+        case "$2" in
+          app-info)   ACT=APPLICATION_DETAILS_SETTINGS ;;
+          app-notify) ACT=APP_NOTIFICATION_SETTINGS ;;
+          app-perms)  ACT=APPLICATION_DETAILS_SETTINGS ;;
+        esac
+        dsh_http POST /launch-intent "{\"action\":\"android.settings.$ACT\",\"data\":\"package:$PKG\"}" || exit 2 ;;
       sleep)
         dsh_http POST /idle '{"timeoutMs":1200}' || exit 2 ;;
       *)
         echo "usage: scr macro <back|home|recents|notifications|quick_settings|open-settings|sleep>" >&2
+        echo "       scr macro <wifi|bluetooth|display|sound|battery|apps|location|security|about|storage|network|date|accessibility|apps-default>" >&2
+        echo "       scr macro <app-info|app-notify|app-perms> <package>" >&2
         exit 2 ;;
     esac
+    ;;
+
+  framediff)
+    # v1.2.122: frame diff - local <5ms "did the screen change" (dynamic visual scenes).
+    # The event stream cannot cover Canvas games/video/animations: no node tree, no events.
+    dsh_http GET /frame-diff || exit 2
+    ;;
+
+  framewait)
+    # v1.2.122: wait for the picture to change (replaces fixed sleep)
+    shift; dsh_http POST /frame-wait "${1:-{\"timeoutMs\":5000,\"intervalMs\":250}}" || exit 2
     ;;
 
   diff)

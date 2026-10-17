@@ -1,0 +1,114 @@
+#!/system/bin/sh
+# [dsh-android] 自举到引擎 bash（/dev/tcp 是 bash 特性，toybox sh 不支持）。
+# shebang 机制不传环境变量，故显式设 LD_LIBRARY_PATH 后 exec；
+# _DSH_REEXEC 标记防止 exec "$0" 造成无限递归。
+if [ -z "$_DSH_REEXEC" ]; then
+  _DSH_REEXEC=1; export _DSH_REEXEC
+  LD_LIBRARY_PATH="@DSH_LIBDIR@${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; export LD_LIBRARY_PATH
+  exec "@DSH_BASH@" "$0" "$@"
+fi
+# [dsh-android] loop: 本地闭环执行器（v1.2.127）—— 让本地毫秒级判别 + 执行，
+# 云端只在本地卡住时兜底。
+#
+# 为什么给 agent 这个工具：直接用 scr 一步步操作时，每步都要你（模型）决策
+# → 每次往返数秒；而本工具把「一串动作 + 验证 + 失败重试」交给**本地**闭环
+# 执行器（PICK 精确 1-2ms / 语义 ~93ms → ACT → VERIFY → 重试 → escalate），
+# 单步 p50 约 1.7s（其中判别仅 27ms），且**不再有模型往返**。
+# 实测（模拟器）：本地闭环 + 失败时你重新规划 → 困难/极难任务成功率 100%。
+#
+#   run <json-file|->      执行决策程序（推荐：一次给多步，本地连续执行）
+#   pick <target> [--tap]  单步判别（毫秒级选节点；--tap 直接点）
+#   status                 本地模型/服务就绪状态（嵌入模型是否在跑）
+#   memory list|stats|clear 场景记忆（同场景第二次可跳过规划）
+#   vision track <id>      视觉定位（无节点树场景：游戏/Canvas）
+#   vision list            已存视觉模板
+#   frame                  帧差：画面变了没（动态场景验证）
+#
+# 决策程序 JSON 格式（run 用）：
+#   {"goal":"...","steps":[
+#     {"id":"s1","desc":"...","target":{"text":["锚点1","锚点2"]},
+#      "action":{"type":"tap"},
+#      "verify":{"anyText":["出现文本"],"checkedText":["开关名"],"frameChanged":true,"timeoutMs":5000},
+#      "onFail":{"retry":1,"then":"escalate"}}]}
+#   action.type: tap|tap_text|swipe|scroll|scroll_find|scroll_collect|repeat|repeat_until|double_tap|long_press|pinch|drag|back_to|input|key|launch|intent|set_switch|sleep|collect|noop
+#     scroll_collect: {"maxSwipes":5,"direction":"down"} 滚动收集全文（长列表/文章）
+#     repeat: {"action":{...},"times":3,"intervalMs":800}  重复子动作
+#     repeat_until: {"action":{...},"verify":{...},"maxTimes":8} 重复直到条件满足（刷新/重试）
+#     double_tap / long_press({"durationMs"}) / pinch({"scale"}) / drag({"toX","toY"}) / back_to({"package"})
+#   （input: {"type":"input","text":"...","target":"输入框提示"}
+#     key: {"type":"key","name":"enter|back|home"}  launch: {"package":"..."} 或 {"data":"http://..."}
+#     scroll: {"type":"scroll","direction":"down|up","distance":720}   ← down = 看下面的内容
+#     scroll_find: {"type":"scroll_find","text":["关于手机","关于模拟设备"],"maxSwipes":8,"tap":true}
+#                  ← 命中即停（不滚过头）；失败回传已滚次数 + 最后屏幕文本
+#     set_switch: {"type":"set_switch","value":"on|off"}，target = 开关标签
+#                  ← 幂等：先读态，仅必要时点击；重试不会二次翻转）
+#   verify 任一满足即通过；checkedText 验证"某文本对应的开关已选中"（最可靠）；
+#     toggle: {"toggle":{"label":"启用深色主题","to":"on|off"}} ← 能断言 off（checkedText 不能）
+#   onFail.then: escalate（默认，交回你重新规划）| continue | abort
+#
+# 典型用法（你的工作流）：
+#   1. scr dump 看屏幕 → 你规划出 steps → 写成 JSON
+#   2. loop run - <<'EOF' ... EOF      （本地连续执行，失败会返回 escalate + 候选池证据）
+#   3. 若 escalate：看返回的 failedAt/候选池 → 你重新规划 → 再 loop run
+#   4. 同场景第二次：加 "useMemory":true，命中记忆则本地直接复用（连 steps 都可省）
+DIR=$(cd "$(dirname "$0")" && pwd)
+. "$DIR/_dsh_http.sh"
+
+case "$1" in
+  run)
+    [ -n "$2" ] || { echo "usage: loop run <json-file|->" >&2; exit 64; }
+    if [ "$2" = "-" ]; then
+      BODY=$(cat) || exit 66
+    else
+      BODY=$(cat "$2") || { echo "cannot read $2" >&2; exit 66; }
+    fi
+    [ -n "$BODY" ] || { echo "empty plan" >&2; exit 65; }
+    # v1.2.134：多步计划的执行时长远超 _dsh_http.sh 的默认 10s 读超时
+    # （本地 ~1.8s/步）——AI 实测反馈「客户端报读取超时 exit=2，但计划其实
+    # 已经执行成功」，容易误判失败并重复执行。
+    # v1.2.152 审查修复：此前闸门 120s < 服务端 180s —— 120~180s 之间客户端先
+    # 断开，**看不到服务端那份带 ok/steps/escalated 的结构化超时报告**，AI 只能
+    # 猜"是不是没生效"并重跑，而重跑是唯一会放大真实副作用（重复点击/重复提交）
+    # 的路径。客户端超时必须严格大于服务端，让服务端的报告先到。
+    DSH_HTTP_TIMEOUT="${DSH_LOOP_TIMEOUT:-195}" dsh_http POST /loop/run "$BODY" || exit 2
+    ;;
+  pick)
+    [ -n "$2" ] || { echo "usage: loop pick <target> [--tap]" >&2; exit 64; }
+    TAP=false; [ "$3" = "--tap" ] && TAP=true
+    dsh_http POST /pick "{\"target\":\"$(_dsh_json_escape "$2")\",\"tap\":$TAP}" || exit 2
+    ;;
+  status)
+    dsh_http GET /local/status || exit 2
+    ;;
+  memory)
+    case "$2" in
+      list)  dsh_http GET /memory/list || exit 2 ;;
+      stats) dsh_http GET /memory/stats || exit 2 ;;
+      clear) dsh_http POST /memory/clear '{}' || exit 2 ;;
+      *) echo "usage: loop memory list|stats|clear" >&2; exit 64 ;;
+    esac
+    ;;
+  vision)
+    case "$2" in
+      track)
+        [ -n "$3" ] || { echo "usage: loop vision track <template-id>" >&2; exit 64; }
+        dsh_http POST /vision/track "{\"id\":\"$(_dsh_json_escape "$3")\"}" || exit 2
+        ;;
+      list) dsh_http GET /vision/list || exit 2 ;;
+      *) echo "usage: loop vision track <id> | list" >&2; exit 64 ;;
+    esac
+    ;;
+  frame)
+    dsh_http GET /frame-diff || exit 2
+    ;;
+  *)
+    echo "loop: 本地闭环执行器（v1.2.127）—— 本地毫秒级判别+执行，云端兜底" >&2
+    echo "  run <json-file|->       执行决策程序（多步连续执行，失败 escalate）" >&2
+    echo "  pick <target> [--tap]   单步判别（毫秒级）" >&2
+    echo "  status                  本地模型/服务状态" >&2
+    echo "  memory list|stats|clear 场景记忆（同场景复用可跳过规划）" >&2
+    echo "  vision track <id>|list  视觉定位（无节点树场景）" >&2
+    echo "  frame                   帧差（画面变了没）" >&2
+    exit 64
+    ;;
+esac

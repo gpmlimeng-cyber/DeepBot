@@ -33,7 +33,19 @@ class VoicePanel(private val svc: AccessibilityService) {
     private val wm: WindowManager =
         svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-    val isVisible: Boolean get() = view != null
+    /**
+     * 面板是否对用户可见。
+     *
+     * v1.2.186：**停靠态（parked）不算可见** —— 发送后窗口不销毁，只是
+     * 透明 + 不可触摸地留在窗口管理器里，下次语音直接复用。
+     */
+    val isVisible: Boolean get() = view != null && !parked
+
+    /**
+     * 是否处于「停靠」态：窗口还在（未 removeView），但透明且不接收触摸。
+     * 见 [hide] 的 animate=false 分支。
+     */
+    @Volatile private var parked = false
 
     /**
      * 显示面板。
@@ -47,7 +59,8 @@ class VoicePanel(private val svc: AccessibilityService) {
         onClose: () -> Unit,
     ) {
         if (view != null) {
-            // 已显示 → 视为再次唤起：清空并重新聚焦
+            // 已存在（展开中或停靠态）→ 复用窗口，避免 add/remove 带来的合成器残影
+            if (parked) unpark()
             input?.setText("")
             setHint(ctx.getString(R.string.overlay_speak_now))
             return
@@ -118,8 +131,19 @@ class VoicePanel(private val svc: AccessibilityService) {
                     raw
                 }
                 Log.i(TAG, "send tapped: raw='${raw.take(40)}' text='${text.take(40)}'")
-                if (text.isNotEmpty()) onSend(text)
-                hide()
+                // ⚠️ v1.2.182（用户反馈「点击发送还是会有一帧闪一下」）：
+                // 必须**先移除面板、再发文本**，且这里**不播淡出动画**。
+                //   旧顺序：onSend(写入+提交) → hide() 播 180ms 淡出。
+                //   而提交会让对话页立刻滚动/重排 —— 这 180ms 里半透明的语音面板
+                //   正好压在一个正在动的页面上，视觉上就是"闪一下"。
+                // 现在：面板瞬间消失（无残影），页面随后的滚动不再被半透明层覆盖。
+                // 淡出动画只保留给「关闭/重说」这类不会触发页面滚动的手动路径。
+                if (text.isNotEmpty()) {
+                    hide(animate = false)
+                    onSend(text)
+                } else {
+                    hide()
+                }
             }
             bindTap(retry) {
                 Log.i(TAG, "retry tapped")
@@ -127,6 +151,9 @@ class VoicePanel(private val svc: AccessibilityService) {
                 //（面板里再调一次 stop 会与新会话启动打架，实测出现 stopped/listening 反复重启）
                 et.setText("")
                 hintTv.text = ctx.getString(R.string.overlay_speak_now)
+                // v1.2.188（审查）：consumed 守卫在 ACTION_UP 时已置 true；
+                // 面板不销毁（重说），必须复位，否则之后 Send/Close/再 Retry 全被吞。
+                consumed = false
                 onRetry()
             }
             bindTap(close) {
@@ -181,10 +208,50 @@ class VoicePanel(private val svc: AccessibilityService) {
      *
      * @param stopAudio 是否停止识别（默认 true）。由 onSend/onClose 内部调用时
      *                  调用方可能已停过，但重复 stop 是幂等的，这里统一兜底。
+     * @param animate   是否播「下滑 + 淡出」退场动画。默认 true；
+     *                  **发送时传 false**（v1.2.182）：提交会让对话页立刻滚动，
+     *                  180ms 的半透明残影压在正在动的页面上 = 用户看到的"闪一下"。
      */
-    fun hide(stopAudio: Boolean = true) {
+    fun hide(stopAudio: Boolean = true, animate: Boolean = true) {
         if (stopAudio) onHide?.invoke()
         val v = view ?: return
+        // 清焦点必须在移除/停靠之前：用户编辑过文本时输入法正连在这个 EditText 上，
+        // 直接销毁窗口会让 IME 骤然收起 → 宿主页面重排一次（又一帧闪）。
+        runCatching { input?.clearFocus() }
+
+        if (!animate) {
+            // 发送路径：**停靠（park）而不是销毁窗口**（v1.2.186，用户反馈"对话框收起后仍闪一下"）。
+            //
+            // 为什么不再 removeView：v1.2.184/185 试过「alpha=0 后 post 移除」，真机仍能看到
+            // 一帧残影 —— 这是 overlay 窗口**销毁时合成器那一帧**的问题，应用层调 alpha
+            // 无法完全消除。现在窗口留在 WindowManager 里，只做两件事：
+            //   ① alpha=0（完全透明，不可见）
+            //   ② 窗口标记改成 NOT_TOUCHABLE|NOT_FOCUSABLE（不挡触摸、不抢焦点）
+            // 下次语音直接 unpark 复用 —— 全程没有窗口增删，也就没有那一帧。
+            //
+            // ⚠️ 这里**不能**清空 view/input/hint 引用：停靠的意义就是保留它们供下次复用。
+            val params = v.layoutParams as? WindowManager.LayoutParams
+            runCatching {
+                v.animate().cancel()
+                v.alpha = 0f
+                v.translationY = 0f
+                if (params != null) {
+                    params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    wm.updateViewLayout(v, params)
+                }
+            }
+            parked = true
+            consumed = false
+            Log.i(TAG, "voice panel parked (no window teardown, stopAudio=$stopAudio)")
+            return
+        }
+
+        // 关闭路径：真正销毁（不再需要时释放资源）
+        parked = false
+        // 清空引用必须在动画前：这样动画期间的迟到识别结果不会写回正在消失的面板
+        view = null; input = null; hint = null
+
         // 出场动效（v1.2.88，v1.2.89 修「卡回原位再消失」）：
         // 先播「下滑 + 淡出」，动画结束再移除窗口。
         //
@@ -192,7 +259,6 @@ class VoicePanel(private val svc: AccessibilityService) {
         // → translationY 只有 40px → 视觉上"先掉一点又弹回原位再消失"
         //（主人实测："向下退出，但又突然一瞬间卡回原位置，然后消失"）。
         // 改用**屏高比例**的固定位移，与视图是否已测量无关。
-        view = null; input = null; hint = null
         val dy = (v.resources.displayMetrics.heightPixels * 0.35f).coerceAtLeast(300f)
         v.animate()
             .translationY(dy)
@@ -204,6 +270,55 @@ class VoicePanel(private val svc: AccessibilityService) {
                 Log.i(TAG, "voice panel hidden (animated, stopAudio=$stopAudio)")
             }
             .start()
+    }
+
+    /**
+     * 停靠态恢复：重新可触摸/可聚焦，并淡入。
+     *
+     * ⚠️ v1.2.188（审查 P2）：`parked = false` 必须在恢复**成功之后**才置位。
+     * 若 updateViewLayout 失败（视图已被系统摘除等），旧写法会留下
+     * 「isVisible=true 但窗口不可见/不可触摸」的僵尸态 —— 看门狗认为面板在、
+     * 麦克风不会被释放，用户也点不到任何按钮。失败时保持 parked=true，
+     * 下次 show() 会重试 unpark。
+     */
+    private fun unpark() {
+        val v = view ?: return
+        val params = v.layoutParams as? WindowManager.LayoutParams
+        if (params == null) {
+            Log.w(TAG, "unpark skipped: no WindowManager.LayoutParams (will retry)")
+            return
+        }
+        val ok = runCatching {
+            params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            wm.updateViewLayout(v, params)
+            v.alpha = 0f
+            v.animate().alpha(1f).setDuration(120L).start()
+        }.onFailure { Log.w(TAG, "unpark failed: ${it.message}") }.isSuccess
+        if (!ok) return
+        parked = false
+        consumed = false
+        Log.i(TAG, "voice panel unparked")
+    }
+
+    /**
+     * 服务销毁时的同步清理（v1.2.188，审查 P2）。
+     *
+     * 不能走 [hide] 的动画路径：进程可能在这 180ms 内就没了，
+     * `withEndAction { removeView }` 不会执行（只靠系统回收窗口）。
+     */
+    fun dispose() {
+        parked = false
+        consumed = true
+        removeWindow()
+        lastRecognized = ""
+    }
+
+    /** 从窗口管理器移除并清空引用（幂等）。 */
+    private fun removeWindow() {
+        val v = view ?: return
+        view = null; input = null; hint = null
+        runCatching { wm.removeView(v) }
+        Log.i(TAG, "voice panel removed")
     }
 
     companion object {

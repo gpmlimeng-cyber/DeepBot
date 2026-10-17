@@ -1,0 +1,276 @@
+package app.dsh.mobile.engine
+
+import android.content.Context
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * 场景记忆（v1.2.125）—— 「越玩越聪明」的端侧实现。
+ *
+ * ## 机制
+ * 不做模型训练，做**记忆**（非参数化学习）：
+ * 1. 云端规划的决策执行**成功** → 存 (场景指纹, 目标, 决策程序)
+ * 2. 下次遇到**相似场景**（屏幕文本集合 Jaccard 相似度 ≥ 阈值）→ 直接复用，
+ *    **跳过云端**（云端 0.6-1.6s/次 → 查表 <1ms）
+ * 3. 复用后失败 → misses+1，超阈值淘汰（防错记忆固化）
+ *
+ * ## 数据从哪来（关键洞察）
+ * **每次云端的纠正都是标注样本**：本地选错 A → 云端改选 B → (屏幕, 目标, 正确答案=B)
+ * 就是一条天然的标注对。记忆攒够之后可导出训练判别头（泛化），但记忆本身零成本。
+ *
+ * ## 实测（2026-10-11，模拟器）
+ * 同任务第 2 次执行：云端调用 3→2 次、记忆命中 2 次。
+ * 陷阱（已修）：动作改变的状态若不在屏幕文本里（开关 checked 不输出）→ 指纹不变
+ * → 记忆反复命中同一动作（反复点开关）。调用方应对「同指纹+同动作」做任务内去重。
+ */
+object SceneMemory {
+
+    private const val TAG = "SceneMemory"
+    private const val FILE = "scene_memory.json"
+    private const val MAX_ENTRIES = 200
+
+    /** 相似度阈值：屏幕文本集合的 Jaccard 相似度 */
+    const val SIM_THRESHOLD = 0.7
+
+    /** 连续失败几次后淘汰 */
+    private const val MAX_MISSES = 2
+
+    data class Entry(
+        val fp: Set<String>,
+        val goal: String,
+        var plan: JSONObject,
+        var hits: Int,
+        var misses: Int,
+        val created: Long,
+        var updated: Long,
+        /** 待确认（v1.2.126）：**步骤级成功但任务级未验证**。
+         *  实测教训（极复杂场景）：步骤全过但目标未达成的计划被存为"成功记忆" →
+         *  复用后任务失败（记忆污染）。故成功只存 pending，待云端确认达成后转正。 */
+        var pending: Boolean = false,
+        /** 同一轨迹的连续成功次数（v1.2.139 自动沉淀）：待确认条目的计划
+         *  连续成功 2 次即**自动转正**——重复验证过的一致性比单次结果可靠，
+         *  不必等云端确认（AppAgentX/PalmClaw 的"技能沉淀"机制，业界实测
+         *  用结构化捷径替代推理循环可砍 -94.9% 完成时间）。失败会清零并淘汰。 */
+        var pendingHits: Int = 0,
+    ) {
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("fp", JSONArray(fp.toList()))
+            put("goal", goal)
+            put("plan", plan)
+            put("hits", hits)
+            put("misses", misses)
+            put("created", created)
+            put("updated", updated)
+            put("pending", pending)
+            put("pendingHits", pendingHits)
+        }
+    }
+
+    private fun file(ctx: Context): File =
+        File(ctx.filesDir, FILE)
+
+    private fun load(ctx: Context): MutableList<Entry> {
+        val f = file(ctx)
+        if (!f.exists()) return mutableListOf()
+        return runCatching {
+            val arr = JSONArray(f.readText())
+            val out = ArrayList<Entry>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val fpArr = o.optJSONArray("fp") ?: JSONArray()
+                val fp = HashSet<String>(fpArr.length())
+                for (k in 0 until fpArr.length()) fp.add(fpArr.optString(k))
+                out.add(
+                    Entry(
+                        fp = fp,
+                        goal = o.optString("goal"),
+                        plan = o.optJSONObject("plan") ?: JSONObject(),
+                        hits = o.optInt("hits", 0),
+                        misses = o.optInt("misses", 0),
+                        created = o.optLong("created"),
+                        updated = o.optLong("updated"),
+                        pending = o.optBoolean("pending", false),
+                        pendingHits = o.optInt("pendingHits", 0),
+                    )
+                )
+            }
+            out
+        }.getOrElse {
+            Log.w(TAG, "load failed: ${it.message}")
+            mutableListOf()
+        }
+    }
+
+    private fun save(ctx: Context, entries: List<Entry>) {
+        runCatching {
+            val arr = JSONArray()
+            // 容量控制：超限时淘汰"最少命中 + 最旧"的
+            val sorted = entries.sortedWith(compareByDescending<Entry> { it.hits }
+                .thenByDescending { it.updated })
+            sorted.take(MAX_ENTRIES).forEach { arr.put(it.toJson()) }
+            file(ctx).writeText(arr.toString())
+        }.onFailure { Log.w(TAG, "save failed: ${it.message}") }
+    }
+
+    /** 场景指纹 = 屏幕文本集合（复用 FastPicker 的紧凑 dump 解析）
+     *  v1.2.126：**勾选状态纳入指纹**（v:/o: 前缀）——开关开/关是不同指纹，
+     *  修复"点击开关后指纹不变 → 记忆反复命中同一动作（反复点开关）"的根因。 */
+    fun fingerprint(dump: String, foregroundPkg: String = ""): Set<String> {
+        val base = FastPicker.parseCompact(dump)
+            .filter { it.text.isNotBlank() && it.text != "-" }
+            .map {
+                when (it.checked) {
+                    true -> "v:${it.text}"
+                    false -> "o:${it.text}"
+                    null -> it.text
+                }
+            }
+            .toMutableSet()
+        // v1.2.139：前台包名并入指纹——同一文本在不同 App 下不是同一场景
+        // （实测教训：不同 App 的"设置"页文本高度相似，仅靠文本集合会误命中）
+        if (foregroundPkg.isNotBlank()) base.add("pkg:$foregroundPkg")
+        return base
+    }
+
+    fun jaccard(a: Set<String>, b: Set<String>): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        var inter = 0
+        for (x in a) if (b.contains(x)) inter++
+        val union = a.size + b.size - inter
+        return if (union == 0) 0.0 else inter.toDouble() / union
+    }
+
+    /** 查记忆：返回 (entry, 相似度)；无匹配返回 (null, 最高相似度) */
+    fun lookup(ctx: Context, goal: String, fp: Set<String>): Pair<Entry?, Double> {
+        var best: Entry? = null
+        var bestSim = 0.0
+        for (e in load(ctx)) {
+            if (e.goal != goal) continue
+            if (e.pending) continue   // 待确认记忆不参与命中（防污染）
+            val sim = jaccard(fp, e.fp)
+            if (sim > bestSim) {
+                best = e
+                bestSim = sim
+            }
+        }
+        return if (best != null && bestSim >= SIM_THRESHOLD) best to bestSim else null to bestSim
+    }
+
+    /** 存成功决策（同场景同目标则更新） */
+    fun store(ctx: Context, goal: String, fp: Set<String>, plan: JSONObject,
+              pending: Boolean = false) {
+        val entries = load(ctx)
+        val now = System.currentTimeMillis()
+        for (e in entries) {
+            if (e.goal == goal && jaccard(fp, e.fp) >= 0.9) {
+                e.plan = plan
+                e.misses = 0
+                e.updated = now
+                // v1.2.139 自动沉淀：同一轨迹**再次成功** → 计数；连续 2 次即转正。
+                // 设计取舍：单次成功可能有偶然性（故先 pending），但同一指纹下
+                // 重复成功说明计划稳定——此时等云端确认纯属浪费往返。
+                if (e.pending && pending) {
+                    e.pendingHits++
+                    if (e.pendingHits >= 2) {
+                        e.pending = false
+                        Log.i(TAG, "auto-promoted goal=$goal (pendingHits=${e.pendingHits})")
+                    }
+                }
+                save(ctx, entries)
+                Log.i(TAG, "updated entry for goal=$goal (hits=${e.hits} pending=${e.pending} pendingHits=${e.pendingHits})")
+                return
+            }
+        }
+        entries.add(
+            Entry(fp = fp, goal = goal, plan = plan, hits = 0, misses = 0,
+                created = now, updated = now, pending = pending,
+                // 首次成功本身即计 1（自动沉淀）：下一次同轨迹成功就转正，
+                // 共 2 次验证即生效——尽快把稳定路径沉淀为零推理回放。
+                pendingHits = if (pending) 1 else 0)
+        )
+        save(ctx, entries)
+        Log.i(TAG, "stored new entry for goal=$goal (total=${entries.size})")
+    }
+
+    /**
+     * 任务级确认（v1.2.126）：云端判定目标达成后调用 → pending 记忆转正。
+     * @return 转正条数
+     */
+    fun confirm(ctx: Context, goal: String, fp: Set<String>? = null): Int {
+        val entries = load(ctx)
+        var n = 0
+        val now = System.currentTimeMillis()
+        for (e in entries) {
+            if (e.goal != goal || !e.pending) continue
+            if (fp != null && jaccard(fp, e.fp) < SIM_THRESHOLD) continue
+            e.pending = false
+            e.updated = now
+            n++
+        }
+        if (n > 0) save(ctx, entries)
+        Log.i(TAG, "confirm: $n pending entries promoted for goal=$goal")
+        return n
+    }
+
+    /** 诊断：pending 条数 */
+    fun pendingCount(ctx: Context): Int = load(ctx).count { it.pending }
+
+    fun markHit(ctx: Context, entry: Entry) {
+        val entries = load(ctx)
+        entries.find { it.goal == entry.goal && it.created == entry.created }?.let {
+            it.hits++
+            it.misses = 0
+            it.updated = System.currentTimeMillis()
+            save(ctx, entries)
+        }
+    }
+
+    /** 复用失败：计数，超阈值淘汰。返回 true = 已淘汰 */
+    fun markMiss(ctx: Context, entry: Entry): Boolean {
+        val entries = load(ctx)
+        val target = entries.find { it.goal == entry.goal && it.created == entry.created }
+            ?: return false
+        target.misses++
+        if (target.misses >= MAX_MISSES) {
+            entries.remove(target)
+            save(ctx, entries)
+            Log.i(TAG, "evicted entry for goal=${entry.goal} (misses=$MAX_MISSES)")
+            return true
+        }
+        save(ctx, entries)
+        return false
+    }
+
+    /** 统计摘要（含待确认条数：pending 不参与命中，诊断时必须可见） */
+    fun stats(ctx: Context): String {
+        val entries = load(ctx)
+        val hits = entries.sumOf { it.hits }
+        val pending = entries.count { it.pending }
+        return "记忆条目 ${entries.size} 条（待确认 $pending 条），累计命中复用 $hits 次"
+    }
+
+    fun listJson(ctx: Context): String {
+        val arr = JSONArray()
+        for (e in load(ctx)) {
+            arr.put(JSONObject().apply {
+                put("goal", e.goal)
+                put("pending", e.pending)
+                put("pendingHits", e.pendingHits)
+                put("hits", e.hits)
+                put("misses", e.misses)
+                put("fpSize", e.fp.size)
+                put("fpSample", JSONArray(e.fp.take(6).toList()))
+                put("steps", e.plan.optJSONArray("steps")?.length() ?: 0)
+                put("updated", e.updated)
+            })
+        }
+        return JSONObject().put("ok", true).put("entries", arr).toString()
+    }
+
+    fun clear(ctx: Context) {
+        runCatching { file(ctx).delete() }
+        Log.i(TAG, "memory cleared")
+    }
+}

@@ -1,0 +1,47 @@
+#!/system/bin/sh
+# [dsh-android] fast —— 无障碍操作期间的「思考开关」（v1.2.165，用户需求）
+#
+# 为什么给 agent 这个工具：无障碍操作（读屏/点按/验证）的每一步都要走一次完整
+# 云端推理，慢；而那些步骤不需要思考——AI 早已规划好路径，执行只是照做。
+# 打开 fast 后，引擎侧插件（android-plugins/fast-mode.mjs）会在**每一步**把
+# reasoningEffort 置为 off → 不再付思考成本；关闭即恢复常规对话。
+#
+#   fast on      开始无障碍操作（关思考，快）
+#   fast off     操作结束，恢复常规对话
+#   fast         查询当前状态
+#
+# 实现：写/删 $DSH_HOME/fast-mode 标记文件（插件每步读它，带 1.5s 缓存）。
+# 幂等；不需要重启引擎。
+DSH_HOME="${DSH_HOME:-/data/user/0/app.dsh.mobile/files/dsh-home}"
+MARKER="$DSH_HOME/fast-mode"
+
+case "$1" in
+  on)
+    printf 'enabled %s\n' "$(date +%s)" > "$MARKER" 2>/dev/null
+    if [ -f "$MARKER" ]; then
+      echo '{"ok":true,"fast":true,"note":"thinking disabled for subsequent steps; run `fast off` when the UI task is done"}'
+    else
+      echo '{"ok":false,"error":"cannot write marker: '"$MARKER"'"}'
+      exit 2
+    fi
+    ;;
+  off)
+    rm -f "$MARKER" 2>/dev/null
+    if [ -f "$MARKER" ]; then
+      echo '{"ok":false,"error":"cannot remove marker: '"$MARKER"'"}'
+      exit 2
+    fi
+    echo '{"ok":true,"fast":false,"note":"back to normal mode (thinking on)"}'
+    ;;
+  ""|status)
+    if [ -f "$MARKER" ]; then
+      echo '{"ok":true,"fast":true}'
+    else
+      echo '{"ok":true,"fast":false}'
+    fi
+    ;;
+  *)
+    echo '{"ok":false,"error":"usage: fast [on|off|status]"}' >&2
+    exit 64
+    ;;
+esac

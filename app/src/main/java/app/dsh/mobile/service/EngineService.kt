@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import app.dsh.mobile.engine.LanWebProxy
 
 /**
  * 引擎前台服务。
@@ -58,6 +59,19 @@ class EngineService : Service() {
         }
 
         app.supervisor.start(app.appScope)
+
+        // v1.2.160：按偏好恢复「局域网访问 WebUI」代理（默认关闭）。
+        // 刻意与引擎解耦：独立线程 + 独立端口 3090，失败只记日志，不抛出、不重启。
+        runCatching {
+            // ⚠️ 先注入 context：LanWebProxy.start() 需要它推导引擎目录。
+            // 原设计靠 AgentBridge 注入，但 AgentBridge 在 EngineSupervisor 启动流程里
+            // （比这里晚）→ 实测 start() 拿不到 ctx、静默不做任何事（日志一行都没有）。
+            LanWebProxy.setContext(this)
+            if (DshApp.lanWebEnabled(this)) {
+                val pw = DshApp.lanWebPassword(this)
+                Thread({ runCatching { LanWebProxy.start(pw) } }, "lan-boot").apply { isDaemon = true }.start()
+            }
+        }.onFailure { android.util.Log.w("EngineService", "lan proxy: ${it.message}") }
 
         // 🔴 v1.2.73 修主人实测「引擎明明在线，小字一直显示正在启动引擎」：
         // startAsForeground() 每次都把通知重置成 status_starting，而 StateFlow 只在
@@ -218,7 +232,16 @@ class EngineService : Service() {
         runCatching { pushStatusText(getString(R.string.status_exiting)) }
         // ② 后台真正停止（阻塞动作不能在主线程）
         Thread({
-            runCatching { (application as DshApp).supervisor.stop(graceMs = 3_000) }
+            // explicit = true：用户主动退出 → 置「显式退出」标记；
+            // MainActivity 观察到后会 finishAndRemoveTask 并销毁 WebView，
+            // 释放 ~380MB（v1.2.187，用户反馈「退出不彻底、后台仍占内存耗电」）。
+            runCatching { (application as DshApp).supervisor.stop(graceMs = 3_000, explicit = true) }
+            // v1.2.187：这两个是**独立子进程**，不在引擎进程树里，退出时必须显式停 ——
+            //  · 局域网 WebUI 代理（node，端口 3090）：开着时退出引擎它仍在跑
+            //  · 本地推理服务（llama-server）：/local/ensure 起过就一直驻留
+            // 不停的话用户看到"引擎停了"但后台仍有进程吃内存/电。
+            runCatching { app.dsh.mobile.engine.LanWebProxy.stop() }
+            runCatching { app.dsh.mobile.engine.LocalModel.stop() }
             // ③ 回主线程收尾
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 runCatching {
@@ -228,6 +251,11 @@ class EngineService : Service() {
                         @Suppress("DEPRECATION")
                         stopForeground(true)
                     }
+                }
+                // v1.2.157 用户实测反馈：退出引擎后悬浮窗仍在后台（球 + 3s 周期刷新 +
+                // 回空闲定时器）→ 进程持续活跃、耗电。退出时一并彻底拆掉。
+                runCatching {
+                    app.dsh.mobile.StatusOverlay.teardown(app.dsh.mobile.DshAccessibilityService.instance)
                 }
                 stopSelf()
             }

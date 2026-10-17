@@ -38,6 +38,23 @@ KT_STR = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 
 # CJK literals that are intentional (zh-locale data kept in the English build).
 ALLOWED_CJK_LITERALS = {
+    # v1.3.0: on-screen text the app must MATCH, not user-facing copy.
+    # PageStateDetector recognises these Chinese loading labels in other apps' UIs.
+    ("PageStateDetector.kt", "加载中"),
+    ("PageStateDetector.kt", "正在加载"),
+    ("PageStateDetector.kt", "载入中"),
+    ("PageStateDetector.kt", "正在载入"),
+    ("PageStateDetector.kt", "请稍候"),
+    ("PageStateDetector.kt", "请稍等"),
+    # Fullwidth '@' substituted in OCR output so it never collides with the
+    # compact token delimiter (same reason the ASCII '@' is replaced).
+    ("ScreenOcr.kt", "o${startIndex + i} ${b.text.replace('@', '＠')} @${b.cx},${b.cy} c"),
+    # Diagnostic summary returned to the agent (not rendered in the UI).
+    ("SceneMemory.kt", "记忆条目 ${entries.size} 条（待确认 $pending 条），累计命中复用 $hits 次"),
+    # Provider display names: proper nouns shown identically in every locale.
+    ("CredentialProbe.kt", "DeepSeek 官方"),
+    ("CredentialProbe.kt", "通义千问"),
+    ("CredentialProbe.kt", "智谱 GLM"),
     # ExtensionStoreActivity maps catalogue categories to accent colours; the
     # zh catalog still carries Chinese category names, so both are matched.
     ("ExtensionStoreActivity.kt", "语言运行时"),
