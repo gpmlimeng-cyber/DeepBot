@@ -233,6 +233,9 @@ class EngineSupervisor(private val ctx: Context) {
                 "engineBoot" to obj,
                 // 与产品口径对齐的两个数：fork 花了多久、从启动到可用花了多久
                 "engineSpawnMs" to steps["spawn"],
+                // fork → 首次监听可用：引擎自身冷启动的硬指标
+                "firstProbeMs" to lastFirstProbeMs,
+                "healthAttempts" to lastHealthAttempts,
                 "firstReadyMs" to totalMs,
                 "engineReadyMs" to totalMs,
                 "healthTimeoutMs" to healthTimeoutMs,
@@ -274,6 +277,8 @@ class EngineSupervisor(private val ctx: Context) {
                 stepT = now
             }
             // 首启判定（v1.3.6）：成功启动过一次就写下标记，之后都用 12s；没有标记的那次给 60s。
+            lastFirstProbeMs = -1L
+            lastHealthAttempts = 0
             val readyMarker = File(EngineConfig.engineRoot(ctx), ".engine-ready-once")
             val firstBoot = !readyMarker.isFile
             try {
@@ -563,6 +568,13 @@ class EngineSupervisor(private val ctx: Context) {
     }
 
     /** 轮询 http://127.0.0.1:port 直到响应/超时/子进程提前死亡 */
+    /** 本次启动「spawn 之后到第一次探通端口」的耗时（ms）；-1 = 没探到 */
+    @Volatile
+    private var lastFirstProbeMs: Long = -1L
+
+    @Volatile
+    private var lastHealthAttempts: Int = 0
+
     private suspend fun pollHealth(
         port: Int,
         proc: EngineProcess,
@@ -590,11 +602,21 @@ class EngineSupervisor(private val ctx: Context) {
             attempts++
             // 子进程已死就别干等超时——立即返回走快速退避重试
             if (proc.exitFuture.isDone) return@withContext false
-            if (probeOnce(port)) return@withContext true
+            if (probeOnce(port)) {
+                // 「fork → 监听 3080」的真实耗时：引擎自身冷启动的硬指标，
+                // 直接决定 12s 超时够不够、要不要预热 profile
+                lastFirstProbeMs = SystemClock.elapsedRealtime() - started
+                lastHealthAttempts = attempts
+                return@withContext true
+            }
             delay(EngineConfig.HEALTH_INTERVAL_MS)
         }
         // 超时判定前再探一次端口：慢启动的引擎可能在最后一个窗口边缘刚好起来
-        if (!proc.exitFuture.isDone && probeOnce(port)) return@withContext true
+        if (!proc.exitFuture.isDone && probeOnce(port)) {
+            lastFirstProbeMs = SystemClock.elapsedRealtime() - started
+            lastHealthAttempts = attempts
+            return@withContext true
+        }
         // 超时留痕 + 现场取证（v1.2.122）：端口、进程存活、各候选端口是否应答、引擎 stdout 尾巴。
         // 只有这几样一起打，才能分清「引擎没起来」/「起在别的端口」/「端口被残留占着」。
         val elapsed = SystemClock.elapsedRealtime() - started
