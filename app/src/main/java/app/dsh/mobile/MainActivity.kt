@@ -258,7 +258,7 @@ class MainActivity : Activity() {
                 settings.useWideViewPort = false
                 settings.loadWithOverviewMode = false
             }
-            UiMode.FOLD -> {
+            UiMode.FOLD_CLOSED, UiMode.FOLD_OPEN, UiMode.FOLD_OPEN_LANDSCAPE -> {
                 settings.userAgentString = defaultUa
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = false
@@ -282,7 +282,9 @@ class MainActivity : Activity() {
     private fun applyUiViewport(view: WebView) {
         when (uiMode) {
             UiMode.PHONE -> Unit
-            UiMode.FOLD -> view.evaluateJavascript(foldViewportJs(), null)
+            UiMode.FOLD_CLOSED -> view.evaluateJavascript(viewportJs(FOLD_CLOSED_CSS), null)
+            UiMode.FOLD_OPEN -> view.evaluateJavascript(viewportJs(FOLD_OPEN_CSS), null)
+            UiMode.FOLD_OPEN_LANDSCAPE -> view.evaluateJavascript(viewportJs(FOLD_OPEN_LANDSCAPE_CSS), null)
             UiMode.TABLET -> view.evaluateJavascript(TABLET_VIEWPORT_JS, null)
             UiMode.DESKTOP -> view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
         }
@@ -1691,27 +1693,20 @@ class MainActivity : Activity() {
          * 允许双指缩放细看。执行时机 onPageFinished（此时 clientWidth=设备宽）。
          */
         /**
-         * 折叠态（外屏）布局宽度，CSS px。
-         *
-         * 实测自 `dumpsys display`（本机，density 2.75）：
-         *   折叠态（外屏）1168 × 1712 px → 425 × 623 dp
-         *   展开态（内屏）1672 × 2364 px → 608 × 860 dp
-         * 与 WebView 里量到的 `cw=424 / dpr=2.75` 一致。
+         * 折叠屏三种形态的布局宽度（CSS px），实测自 `dumpsys display`（本机 density 2.75）：
+         *   折叠态（外屏）    1168 × 1712 px → 425 × 623 dp  → 425
+         *   展开态（内屏竖）  1672 × 2364 px → 608 × 860 dp  → 608
+         *   展开态（内屏横）  2364 × 1672 px → 860 × 608 dp  → 860
+         * 三个值都**按用户手选**生效，不跟传感器自动翻转。
          */
-        private const val FOLD_WIDTH_CSS = 425
+        private const val FOLD_CLOSED_CSS = 425
+        private const val FOLD_OPEN_CSS = 608
+        private const val FOLD_OPEN_LANDSCAPE_CSS = 860
 
-        /**
-         * 展开态（内屏）布局宽度，CSS px —— **暂不启用**。
-         * 等接 Jetpack WindowManager 的 FoldingFeature（hinge 姿态）后再按状态切换；
-         * 现在写死会让「折叠着拿」也按 608 排版。
-         */
-        @Suppress("unused")
-        private const val UNFOLDED_WIDTH_CSS = 608
-
-        /** 折叠视口：固定 FOLD_WIDTH_CSS 宽，按屏宽缩放 */
-        private fun foldViewportJs(): String =
+        /** 固定宽带视口（折叠/平板/电脑共用）：W 为 CSS px，按屏宽缩放塞进可视区 */
+        private fun viewportJs(w: Int): String =
             "(function(){" +
-                "var W=$FOLD_WIDTH_CSS;" +
+                "var W=$w;" +
                 "var m=document.querySelector('meta[name=\"viewport\"]');" +
                 "if(!m){m=document.createElement('meta');m.setAttribute('name','viewport');" +
                 "(document.head||document.documentElement).appendChild(m);}" +
@@ -1719,7 +1714,7 @@ class MainActivity : Activity() {
                 "m.setAttribute('content','width='+W+', initial-scale='+Math.min(1,cw/W).toFixed(4)+', user-scalable=no');" +
                 "})()"
 
-        /** 平板视口：固定 768 宽，按屏宽缩放塞进可视区 */
+        /** 平板视口：固定 768 宽 */
         private const val TABLET_VIEWPORT_JS =
             "(function(){" +
                 "var W=768;" +

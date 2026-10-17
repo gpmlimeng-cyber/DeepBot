@@ -465,4 +465,7 @@
     <string name="ui_mode_tablet">平板</string>
     <string name="ui_mode_desktop">电脑</string>
     <string name="ui_mode_fold">折叠</string>
+    <string name="ui_mode_fold_closed">折叠（外屏）</string>
+    <string name="ui_mode_fold_open">展开（内屏竖屏）</string>
+    <string name="ui_mode_fold_open_landscape">展开（内屏横屏）</string>
 </resources>

@@ -465,4 +465,7 @@ You can still continue without updating, but the interface will not display.</st
     <string name="ui_mode_tablet">Tablet</string>
     <string name="ui_mode_desktop">Desktop</string>
     <string name="ui_mode_fold">Fold</string>
+    <string name="ui_mode_fold_closed">Fold (cover)</string>
+    <string name="ui_mode_fold_open">Fold (inner, portrait)</string>
+    <string name="ui_mode_fold_open_landscape">Fold (inner, landscape)</string>
 </resources>

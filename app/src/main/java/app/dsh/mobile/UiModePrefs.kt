@@ -10,7 +10,8 @@ import android.content.SharedPreferences
  * 但桌面模式本身有用，所以改成**用户显式选择**，默认手机。
  *
  *   手机：手机 UA，`device-width`，useWideViewPort=false
- *   折叠：手机 UA，注入 `width=425`（实测 dumpsys display：外屏 1168×1712 @2.75）
+ *   折叠：手机 UA，三个常量按用户手选（不跟传感器自动翻转）：
+ *         外屏 425 / 展开竖屏 608 / 展开横屏 860（实测 dumpsys display @2.75）
  *   平板：平板 UA，注入 `width=768` 的 viewport
  *   电脑：桌面 UA，注入上游现成的 `width=1280` 视口（DESKTOP_VIEWPORT_JS）
  *
@@ -19,7 +20,12 @@ import android.content.SharedPreferences
  */
 enum class UiMode(val key: String) {
     PHONE("phone"),
-    FOLD("fold"),
+    /** 折叠态（外屏）425 CSS px */
+    FOLD_CLOSED("fold_closed"),
+    /** 展开态（内屏竖屏）608 CSS px */
+    FOLD_OPEN("fold_open"),
+    /** 展开态（内屏横屏）860 CSS px */
+    FOLD_OPEN_LANDSCAPE("fold_open_landscape"),
     TABLET("tablet"),
     DESKTOP("desktop");
 
