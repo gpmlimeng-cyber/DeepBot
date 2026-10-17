@@ -138,6 +138,9 @@ if command -v python3 >/dev/null 2>&1; then
   # （SELinux）→ 文件搜索整个不可用。改写为同一目录的 /data/user/0/ 另一条路径。
   # 刻意不用全局 --preserve-symlinks：那会改掉所有模块的解析路径，代价远大于收益。
   python3 "$SCRIPTS_DIR/patch-ripgrep-path.py" || echo "WARN: rgPath prefix patch failed"
+  # [layout] 收起态侧栏 collapsedWidth 56 → 0：那条轨道是内联 grid 模板的第一条，
+  # 手机竖屏常驻 56px 会挤窄对话区，且 CSS/JS 覆盖无效（2026-10-18 连试三版）。
+  python3 "$SCRIPTS_DIR/patch-layout-collapsed.py" || echo "WARN: collapsedWidth patch failed"
 fi
 
 # [koffi] FFI 库：仅 glibc/x64 预编译。真实消费方只有 dsh-subprocess-local 的

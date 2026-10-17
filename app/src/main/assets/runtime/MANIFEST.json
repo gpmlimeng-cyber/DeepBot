@@ -1,7 +1,7 @@
 {
-  "version": "v0.2.1-rc.2-arm64-v8a",
+  "version": "v0.2.1-rc.2-arm64-v8a-collapse",
   "url": "",
-  "sha256": "770f3be7720d36875016ea98c106412b0c88bc3f6022fb653205b87d3cc40f15",
+  "sha256": "8a5eb37f4ccdc21517adeec727814fb6864bd59ee0ed0e8c669e6b052ce663eb",
   "_说明": {
     "version": "runtime 快照版本号，安装器据此判断是否重装",
     "url": "远程 runtime.zip 下载地址（assets 内置包缺失时启用）；留空表示仅支持内置包",
