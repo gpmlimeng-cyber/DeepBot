@@ -29,7 +29,7 @@ class PluginStoreActivity : Activity() {
 
     /** v1.2.120：与其余页面一致，按应用内语言偏好包装 Context（此前遗漏） */
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     private lateinit var container: LinearLayout
@@ -123,7 +123,7 @@ class PluginStoreActivity : Activity() {
 
     private fun hint(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(0xFF8A94A3.toInt())
+        setTextColor(getColor(R.color.ds_text_secondary))
         textSize = 14f
         gravity = Gravity.CENTER
         setPadding(0, dp(30), 0, 0)
@@ -131,7 +131,7 @@ class PluginStoreActivity : Activity() {
 
     private fun sectionHeader(title: String): TextView = TextView(this).apply {
         text = title
-        setTextColor(0xFF7DD3FC.toInt())
+        setTextColor(getColor(R.color.ds_accent))
         textSize = 13f
         setTypeface(typeface, Typeface.BOLD)
         setPadding(dp(8), dp(18), dp(8), dp(8))
@@ -163,14 +163,14 @@ class PluginStoreActivity : Activity() {
         }
         titleRow.addView(TextView(this).apply {
             text = p.pkg
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(getColor(R.color.ds_text_primary))
             textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
         })
         if (p.version.isNotBlank()) {
             titleRow.addView(TextView(this).apply {
                 text = "v${p.version}"
-                setTextColor(0xFF7DD3FC.toInt())
+                setTextColor(getColor(R.color.ds_accent))
                 textSize = 11f
                 maxLines = 1          // 版本号不换行（实测 v0.1.4 被拆成两行）
                 setPadding(dp(8), 0, 0, 0)
@@ -180,7 +180,7 @@ class PluginStoreActivity : Activity() {
         if (p.desc.isNotBlank()) {
             textCol.addView(TextView(this).apply {
                 text = p.desc
-                setTextColor(0xFF8A94A3.toInt())
+                setTextColor(getColor(R.color.ds_text_secondary))
                 textSize = 12f
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
@@ -198,7 +198,7 @@ class PluginStoreActivity : Activity() {
             gravity = Gravity.CENTER
             minWidth = dp(64)
             setPadding(dp(14), dp(6), dp(14), dp(6))
-            setTextColor(0xFF7DD3FC.toInt())
+            setTextColor(getColor(R.color.ds_accent))
             setBackgroundResource(R.drawable.bg_btn_outline)
             isClickable = true
             isFocusable = true
@@ -208,7 +208,7 @@ class PluginStoreActivity : Activity() {
         }
         if (isInstalled) {
             // 已装：绿色只读标记（主人实测「装完退出重进又能装」——现在查真实安装记录）
-            btn.setTextColor(0xFF4ADE80.toInt())
+            btn.setTextColor(getColor(R.color.ds_success_alt))
             btn.isClickable = false
             btn.isEnabled = false
         } else {
@@ -223,21 +223,21 @@ class PluginStoreActivity : Activity() {
         val original = btn.text.toString()
         btn.text = getString(R.string.plugin_installing)
         btn.isEnabled = false
-        btn.setTextColor(0xFF8A94A3.toInt())
+        btn.setTextColor(getColor(R.color.ds_text_secondary))
         PluginCenter.install(this, pkg) { ok, msg ->
             runOnUiThread {
                 if (ok) {
                     // 装成功：标记已装并保持绿色只读（不再 2.5s 后复原 —— 那会让用户
                     // 以为没装上、反复点；且与「退出重进」的显示一致）
                     btn.text = getString(R.string.plugin_installed)
-                    btn.setTextColor(0xFF4ADE80.toInt())
+                    btn.setTextColor(getColor(R.color.ds_success_alt))
                     btn.isClickable = false
                     btn.isEnabled = false
                     installed = installed + pkg
                 } else {
                     // 失败：按钮就地显示原因（限长），完整原因已在通知与日志里
                     btn.text = getString(R.string.plugin_failed, msg.take(28))
-                    btn.setTextColor(0xFFF87171.toInt())
+                    btn.setTextColor(getColor(R.color.ds_error))
                     btn.isEnabled = true
                     btn.isClickable = true
                 }

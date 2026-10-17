@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  浅色主题（DSH Web 前端同一套 token）。
+
+  取值来源：引擎 runtime 内 @deepseek-ai/dsh-client-ui-theme 的 alias 变量
+  （dsw-alias-*，浅色挂在 body，深色挂在 body[data-ds-dark-theme]）。
+    label-primary  #0f1115    label-secondary #61666b
+    label-tertiary #81858c    label-caption   #adb2b8
+    bg-base        #f9fafb（neutral-bluish-50，页面底）
+    bg-layer-1/2/3 #ffffff（卡片/输入区）
+    bg-module-platform #f5f6f7（分组底/小色块）
+    border-l2      #0000001a    border-l3 #0000001f    border-l4 #00000029
+    state-success  #22c55e      state-error #ec1313    state-warn #f59e0b
+    link           #4176e6
+  深色档（values-night）保持改造前的观感，数值逐条对齐原有硬编码。
+-->
+<resources>
+    <!-- 底与面 -->
+    <color name="ds_bg_base">#FFF9FAFB</color>
+    <color name="ds_surface">#FFFFFFFF</color>
+    <color name="ds_surface_alt">#FFF5F6F7</color>
+    <color name="ds_surface_sunken">#FFE9ECF2</color>
+
+    <!-- 文字 -->
+    <color name="ds_text_primary">#FF0F1115</color>
+    <color name="ds_text_strong">#FF0F1115</color>
+    <color name="ds_text_secondary">#FF61666B</color>
+    <color name="ds_text_tertiary">#FF81858C</color>
+    <color name="ds_text_hint">#FFADB2B8</color>
+    <color name="ds_icon">#FF0F1115</color>
+
+    <!-- 线 -->
+    <color name="ds_divider">#29000000</color>
+    <color name="ds_divider_soft">#1A000000</color>
+    <color name="ds_border_strong">#1F000000</color>
+    <color name="ds_border_chip">#1F000000</color>
+    <color name="ds_border_menu">#29000000</color>
+    <color name="ds_border_demo">#29000000</color>
+    <color name="ds_demo_bg">#FFF5F6F7</color>
+    <color name="ds_ripple">#1F000000</color>
+    <color name="ds_overlay_panel_bg">#F7FFFFFF</color>
+    <color name="ds_handle_dash">#66000000</color>
+    <color name="ds_status_bar_bg">#E6FFFFFF</color>
+    <color name="ds_warn_text">#FFF59E0B</color>
+    <color name="ds_on_accent">#FFFFFFFF</color>
+
+    <!-- 强调/状态 -->
+    <color name="ds_accent">#FF4176E6</color>
+    <color name="ds_success">#FF22C55E</color>
+    <color name="ds_warn">#FFF59E0B</color>
+    <color name="ds_error">#FFEC1313</color>
+    <color name="ds_success_alt">#FF22C55E</color>
+    <color name="ds_error_alt">#FFEC1313</color>
+    <color name="ds_error_soft">#FFEC1313</color>
+
+    <!-- 浮层（无障碍悬浮窗 / 顶栏 / 语音面板） -->
+    <color name="ds_overlay_ball_bg">#F2FFFFFF</color>
+    <color name="ds_ticker_bg">#F2FFFFFF</color>
+    <color name="ds_voice_panel_bg">#F7FFFFFF</color>
+    <color name="ds_voice_input_bg">#FFFFFFFF</color>
+    <color name="ds_handle_bg">#E6FFFFFF</color>
+    <color name="ds_scrim">#3D000000</color>
+
+    <!-- Toast -->
+    <color name="ds_toast_bg">#FF353638</color>
+    <color name="ds_toast_text">#FFFFFFFF</color>
+    <color name="ic_launcher_background">#0A0A0B</color>
+    <!-- 启动页（v1.2.122）：与图标一致的黑底 + 亮字，避免浅色 splash 与深色 mark 打架 -->
+    <color name="splash_bg">#0A0A0B</color>
+    <color name="splash_text">#FFFFFF</color>
+    <color name="splash_text_dim">#9A9AA0</color>
+    <color name="splash_error">#FF6B6B</color>
+</resources>

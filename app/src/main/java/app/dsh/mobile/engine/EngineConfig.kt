@@ -21,7 +21,84 @@ import java.nio.file.Files
 object EngineConfig {
 
     const val DEFAULT_PORT = 3080
-    const val HEALTH_TIMEOUT_MS = 45_000L
+
+    /**
+     * 端口探测窗口：`DEFAULT_PORT` .. `DEFAULT_PORT + PORT_SCAN_LIMIT`。
+     *
+     * 手机上 3080 常被别的壳/旧实例占着（引擎起不来 → `EADDRINUSE` → 监督器 2s 重启死循环，
+     * 表现是黑屏「进程异常退出，2 秒后自动重启」）。启动前先挑一个真正可绑定的回环端口。
+     */
+    private const val PORT_SCAN_LIMIT = 20
+
+    /** 能力桥（AgentBridge）固定端口，探测时必须避让。 */
+    private const val CAPABILITY_BRIDGE_PORT = 3083
+
+    /** 本次运行实际使用的引擎端口（[resolvePort] 之后固定，全进程单一真源）。 */
+    @Volatile
+    var activePort: Int = DEFAULT_PORT
+      private set
+
+    private var portResolved = false
+
+    /**
+     * 选一个可用端口：优先 [DEFAULT_PORT]，被占则顺延。
+     *
+     * 同时要求 `port + 2`（Shizuku 桥 = `ShizukuHttpBridge.port(port)`）也可绑定，
+     * 且两者都不与能力桥 3083 冲突；全部被占时回落 [DEFAULT_PORT]，
+     * 保留原有的 `EADDRINUSE` 诊断（不掩盖真实故障）。
+     */
+    /** 健康超时后扫端口用的小窗口（v1.2.122）：从期望端口往后探几个 */
+    const val PORT_SCAN_WINDOW = 8
+
+    /** 健康检查时发现引擎起在别的端口上：直接认它，别再杀掉重来（v1.2.122） */
+    @Synchronized
+    fun adoptPort(port: Int) {
+      activePort = port
+      portResolved = true
+    }
+
+    /**
+     * 丢弃已选端口，下次 [resolvePort] 重新扫描（v1.2.122）。
+     * 用于「清理孤儿后端口仍被占」的情形：与其在被占的端口上 spawn 到 EADDRINUSE
+     * 反复退避，不如换一个能绑的端口起来。
+     */
+    @Synchronized
+    fun resetPort() {
+      portResolved = false
+    }
+
+    @Synchronized
+    fun resolvePort(): Int {
+      if (portResolved) return activePort
+      portResolved = true
+      for (offset in 0..PORT_SCAN_LIMIT) {
+        val candidate = DEFAULT_PORT + offset
+        if (candidate == CAPABILITY_BRIDGE_PORT) continue
+        if (candidate + 2 == CAPABILITY_BRIDGE_PORT) continue
+        if (loopbackBindable(candidate) && loopbackBindable(candidate + 2)) {
+          activePort = candidate
+          return activePort
+        }
+      }
+      return activePort
+    }
+
+    /** 本机回环上该端口当前能否绑定（不实际监听，仅探测后立即释放）。 */
+    private fun loopbackBindable(port: Int): Boolean = runCatching {
+      java.net.ServerSocket().use { socket ->
+        socket.reuseAddress = false
+        socket.bind(java.net.InetSocketAddress("127.0.0.1", port))
+      }
+      true
+    }.getOrDefault(false)
+
+    /**
+     * 健康检查超时（v1.2.121：45s → 12s）。
+     * 实测成功的冷启动只需 8.1–9.5s；旧值 45s 意味着一次失败就要白等 45 秒再重试，
+     * 用户看到的就是「启动页挂很久」。改小后失败快速重试，最坏耗时从 45+9 降到 12+9。
+     * 保留原语义：到点仍未 Healthy 即判定本轮失败，走 Backoff 重试。
+     */
+    const val HEALTH_TIMEOUT_MS = 12_000L
     const val HEALTH_INTERVAL_MS = 500L
 
     /** web listen 后的稳定观察窗：挺过此窗才判定 Healthy 并快照 last-good */

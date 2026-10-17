@@ -37,7 +37,7 @@ class OnboardingActivity : Activity() {
         }
 
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,7 +97,7 @@ class OnboardingActivity : Activity() {
         // 先显示「检测中」，结果回填 UI。
         findViewById<TextView>(R.id.capRoot).apply {
             text = getString(R.string.ob_cap_root_checking)
-            setTextColor(0xFF8A94A3.toInt())
+            setTextColor(getColor(R.color.ds_text_secondary))
         }
         Thread({
             val hasRoot = Privilege.probe(this).hasRoot
@@ -106,7 +106,7 @@ class OnboardingActivity : Activity() {
                     text = getString(
                         if (hasRoot) R.string.ob_cap_root_present else R.string.ob_cap_root_absent
                     )
-                    setTextColor(if (hasRoot) 0xFF6EE7B7.toInt() else 0xFFFFB74D.toInt())
+                    setTextColor(if (hasRoot) getColor(R.color.ds_success) else getColor(R.color.ds_warn))
                 }
             }
         }, "probe-root").apply { isDaemon = true; start() }
@@ -155,16 +155,16 @@ class OnboardingActivity : Activity() {
         when {
             Privilege.shizukuUsable() -> {
                 v.text = getString(R.string.ob_cap_shizuku_present)
-                v.setTextColor(0xFF6EE7B7.toInt())
+                v.setTextColor(getColor(R.color.ds_success))
             }
             Privilege.shizukuServerRunning() -> {
                 v.text = getString(R.string.ob_cap_shizuku_request)
-                v.setTextColor(0xFFFFB74D.toInt())
+                v.setTextColor(getColor(R.color.ds_warn))
                 Privilege.requestShizukuPermission(SHIZUKU_REQ)
             }
             else -> {
                 v.text = getString(R.string.ob_cap_shizuku_absent)
-                v.setTextColor(0xFFFFB74D.toInt())
+                v.setTextColor(getColor(R.color.ds_warn))
             }
         }
     }
@@ -187,8 +187,8 @@ class OnboardingActivity : Activity() {
      *    默认英语时用户看不出当前选的是哪个）。
      */
     private fun updateSelectionUi() {
-        val highlight = 0xFF7DD3FC.toInt()
-        val normal = 0xFF9CA3AF.toInt()
+        val highlight = getColor(R.color.ds_accent)
+        val normal = getColor(R.color.ds_text_tertiary)
 
         // —— 方向：竖屏/横屏/自动 ——
         val orientCards = listOf(

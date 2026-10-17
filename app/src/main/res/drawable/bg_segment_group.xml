@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 三档分段控件的槽底（主题：浅色/跟随系统/深色） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/ds_surface_sunken" />
+    <corners android:radius="10dp" />
+</shape>

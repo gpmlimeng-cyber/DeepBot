@@ -173,6 +173,71 @@ gradle assembleDebug -Pabi=arm64-v8a
 - **长任务非绝对不死**：用户强杀/极端省电模式仍会中断（引擎会自动重启，进行中任务需重新派发）
 - **提权伴随风险**：Root 模式 AI 具全盘读写能力，误操作可能损坏系统——详见下方免责声明
 
+## 🧩 DeepBot 壳侧注入（v1.2.122+）
+
+DeepBot 把「往页面补什么样式」从 APK 代码里挪了出来：壳只负责**推变量**、**读文件**、**写一次 `<style>`**，具体规则保存在
+
+```
+1. /storage/emulated/0/DSH/deepbot/inject.json      # 共享目录，文件管理/电脑可直接改（存在即生效）
+2. $DSH_HOME/deepbot/inject.json                    # App 私有，首次运行写出的出厂默认（兜底）
+```
+
+**改文件 → 页面重新加载一次即生效**（切会话、下拉刷新，或点设置页「重新加载注入」），既不用重装也更不用重启 App。壳在**每次页面加载**时重读该文件；共享文件没有或读不了时退回私有默认。
+
+### 注入的 CSS 变量
+
+| 变量 | 值 | 用途 |
+|---|---|---|
+| `--dsh-mobile-top-inset` | 状态栏高度（px） | ds-bot 既有契约：顶部避让 |
+| `--dsh-mobile-bottom-inset` | 底部系统 inset（px） | ds-bot 既有契约：底部避让 |
+| `--dsh-android-system-bottom` | 底部系统 inset（px） | ds-bot 底栏间隙 `--bt-nav-gap` 读它（手势条/三键导航条高度） |
+| `--dsh-safe-top` / `--dsh-safe-bottom` | 同上 | 通用名，第三方前端可直接用 |
+| `--dsh-sab` | 同底部 inset | v1.2.122 别名，保留兼容 |
+
+「状态栏样式 = 跟随系统」时窗口不延伸，上述值全部注入 `0px`，页面无需额外留白。
+
+### inject.json 结构
+
+```json
+{
+  "version": 1,
+  "probe": false,
+  "css": ["html[data-bt-mobile][data-bt-portrait] [class*=\"centerCol\"]{padding-bottom:calc(56px + max(env(safe-area-inset-bottom,0px),var(--dsh-android-system-bottom,0px)))!important}"],
+  "js":  []
+}
+```
+
+- `css`：按顺序拼进一个 `<style id="dsh-inset-fix">`；设置里的「底部安全区适配」关掉时整段不注入（变量仍保留），方便一键回到裸布局对比。
+- `js`：样式写入后执行一次。会随 inset 变化重复执行，**必须写成幂等**；抛错只影响这一条，不会中断页面。
+- `version`：内置规则集版本。私有文件版本低于内置时会**自动迁移**——内置规则在前、你加过的规则按原顺序追加在后（去重），`js` / `probe` 原样保留。这条是为了在「App 没有存储权限、共享文件读不到」时，新默认规则仍能进到设备上。
+- `probe`：`true` 时每次注入额外打一条布局测量日志（`logcat -s DshWebView`，前缀 `DSHPROBE2:`），内容含视口尺寸、`html`/`body` 的 padding 与 margin、`--dsh-mobile-top-inset` 与 `--dsh-android-system-top/bottom` 的取值、`body`/`_centerCol` 矩形与 `padding-top`、`_centerCol` 首个可见子元素（判定页头占位）、`[class*="rail"]` 与 `[class*="side"]` 的前三个可见元素。缺省为 `true`；不需要时写成 `false`（同样不用重新打包）。
+- 文件缺失或两个数组都为空 → 退回内置默认规则，不会让页面因为一个坏文件变裸奔。
+
+### 壳内悬浮层的避让
+
+全屏之后原生视图的 `y=0` 就在状态栏里，所以壳自己把这几层按同一个 `insetTop` 下移（`MainActivity.applyShellInsets()`）：
+
+| 视图 | 处理 |
+|---|---|
+| 顶部把手 `handleBar` | 默认落在 `insetTop + 2dp`；拖动范围夹在 `[insetTop, 高度 − insetBottom − 自身高]`，拖不到状态栏和手势条里 |
+| 工具栏 `statusBarRow` | 高度变成 `40dp + insetTop`，内容区仍 40dp |
+| 解压进度条 `installProgress` | `marginTop` 从 40dp 改为 `40dp + insetTop` |
+
+### 默认规则之二：收起抽屉的阴影
+
+ds-bot 手机端左侧抽屉（`.bt-side.bt-rail`）关闭时已经用 `transform:translateX(-105%)` 移到屏外，但它的 `box-shadow` 与 `border-right` 仍会从屏幕左缘渗出一条几像素的暗边。默认规则只清这两样，**不隐藏元素**——它就是抽屉本体，隐藏后侧栏就打不开了：
+
+```css
+html[data-bt-mobile] .bt-side.bt-rail:not([data-mobile-open]){
+  box-shadow:none !important;
+  border-right:0 !important;
+}
+```
+
+### 默认规则为什么长这样
+
+ds-bot 给底栏留 56px 的规则挂在 `[data-dsh-frame]` 上（`src/client/nav-bar.js:207`），而 dsh `0.2.1-rc.1` 把 frame 的类名哈希成 `pI_x6G_frame`、页面上**没有** `data-dsh-frame` 属性，于是那条规则永远匹配不到，输入框被底栏压住。壳侧改成按类名子串 `[class*="centerCol"]` 匹配，并沿用 ds-bot 同一组开关 `html[data-bt-mobile][data-bt-portrait]`，横屏与桌面布局不受影响。ds-bot 源码零改动。
+
 ## ❓ FAQ
 
 **需要 Root 吗？** 不需要。普通模式覆盖绝大多数用法，Root/Shizuku 是高级可选项。

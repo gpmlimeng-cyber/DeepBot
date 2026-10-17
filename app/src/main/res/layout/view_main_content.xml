@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主内容（v1.2.121 拆出）：首帧不 inflate，等启动页画完再由 ViewStub 填进来，
+     避免 WebView 初始化卡在 setContentView 里拖慢首帧。 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- WebView 全屏垫底：半透明工具栏悬浮其上（网页内容透出，浏览器质感） -->
+    <WebView
+        android:id="@+id/webView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 安装/启动进度条：Installing 显示真实解压百分比，Starting 转不确定动画 -->
+    <ProgressBar
+        android:id="@+id/installProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="3dp"
+        android:maxHeight="3dp"
+        android:layout_gravity="top"
+        android:layout_marginTop="40dp"
+        android:indeterminate="true"
+        android:progressTint="@color/ds_accent"
+        android:progressBackgroundTint="@color/ds_divider_soft"
+        android:elevation="4dp"
+        android:visibility="gone" />
+
+    <!-- 工具栏隐藏后的顶部把手：小圆角胶囊，可拖到屏幕边缘任意位置（避让遮挡），点它唤回工具栏 -->
+    <LinearLayout
+        android:id="@+id/handleBar"
+        android:layout_width="64dp"
+        android:layout_height="16dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="2dp"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="@drawable/bg_handle_bar"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+        <View
+            android:layout_width="28dp"
+            android:layout_height="3dp"
+            android:background="@color/ds_handle_dash" />
+    </LinearLayout>
+
+    <!-- 工具栏：70% 半透明悬浮层；点文字空白区隐藏，点把手唤回 -->
+    <LinearLayout
+        android:id="@+id/statusBarRow"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:orientation="horizontal"
+        android:background="@color/ds_status_bar_bg"
+        android:elevation="4dp"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/statusBar"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:paddingHorizontal="16dp"
+            android:textColor="@color/ds_text_tertiary"
+            android:textSize="13sp"
+            android:gravity="center_vertical"
+            android:singleLine="true"
+            android:ellipsize="end" />
+
+        <!-- 预览模式返回按钮：仅当 WebView 位于非引擎端口的回环页面时显示 -->
+        <TextView
+            android:id="@+id/btnBack"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="@string/btn_back"
+            android:textColor="@color/ds_success"
+            android:textSize="13sp"
+            android:visibility="gone"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <TextView
+            android:id="@+id/btnRestart"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:paddingHorizontal="14dp"
+            android:text="@string/btn_restart"
+            android:textColor="@color/ds_accent"
+            android:textSize="13sp"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <!-- 隐藏工具栏：一键让网页全屏（点顶部小把手唤回） -->
+        <TextView
+            android:id="@+id/btnHide"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:paddingHorizontal="14dp"
+            android:text="@string/btn_hide"
+            android:textColor="@color/ds_text_tertiary"
+            android:textSize="13sp"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <!-- 设置入口：齿轮图标（跳转独立设置页） -->
+        <ImageView
+            android:id="@+id/btnMore"
+            android:layout_width="44dp"
+            android:layout_height="match_parent"
+            android:padding="10dp"
+            android:layout_marginEnd="2dp"
+            android:src="@drawable/ic_settings"
+            android:background="?android:attr/selectableItemBackground"
+            android:contentDescription="@string/settings_title" />
+    </LinearLayout>
+</FrameLayout>

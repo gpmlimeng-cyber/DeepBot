@@ -618,7 +618,7 @@ document.getElementById('api').textContent = checks.map(function(c){
             } else {
                 @Suppress("DEPRECATION") Notification.Builder(ctx)
             }
-            builder.setSmallIcon(R.drawable.ic_launcher_foreground)
+            builder.setSmallIcon(R.drawable.ic_launcher_monochrome)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setAutoCancel(true)

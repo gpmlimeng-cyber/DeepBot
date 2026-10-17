@@ -36,6 +36,8 @@ class SettingsActivity : Activity() {
 
     /** 屏幕朝向偏好（v1.2.120 三态） */
     private var orientMode: OrientationMode = OrientationMode.PORTRAIT
+    /** 状态栏样式（v1.2.122 三档） */
+    private var statusBarMode: StatusBarMode = StatusBarMode.TRANSPARENT
     private var pageScale = DEFAULT_PAGE_SCALE
 
     /** 当前打开的权限选择对话框（选完/切换中转时关闭） */
@@ -48,7 +50,7 @@ class SettingsActivity : Activity() {
         }
 
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,6 +90,70 @@ class SettingsActivity : Activity() {
         // —— 显示：页面缩放 ——
         findViewById<LinearLayout>(R.id.rowScale).setOnClickListener {
             showScaleDialog()
+        }
+
+        // —— 显示：启动后自动隐藏顶部工具栏（v1.2.121，默认开，即时生效）——
+        // 与朝向/缩放同款落库方式（dsh_ui prefs + apply），MainActivity 在下次
+        // 「引擎就绪」跃迁时按新值决定是否收起，无需重启。
+        val swAutoHide = findViewById<android.widget.Switch>(R.id.swAutoHide)
+        swAutoHide.isChecked = AutoHidePrefs.isEnabled(this)
+        swAutoHide.setOnCheckedChangeListener { _, checked ->
+            AutoHidePrefs.set(this, checked)
+        }
+        findViewById<LinearLayout>(R.id.rowAutoHide).setOnClickListener {
+            swAutoHide.isChecked = !swAutoHide.isChecked
+        }
+
+        // —— 显示：主题（浅色 / 跟随系统 / 深色，v1.2.121）——
+        // 三档分段控件；落库后本页 recreate()，重走 attachBaseContext 里
+        // 的 ThemeHelper.wrap，立刻换成新色板（不重启进程）。
+        val segLight = findViewById<TextView>(R.id.segThemeLight)
+        val segSystem = findViewById<TextView>(R.id.segThemeSystem)
+        val segDark = findViewById<TextView>(R.id.segThemeDark)
+        fun renderThemeSegments() {
+            val current = ThemePrefs.get(this)
+            for ((view, mode) in listOf(
+                segLight to ThemeMode.LIGHT,
+                segSystem to ThemeMode.SYSTEM,
+                segDark to ThemeMode.DARK,
+            )) {
+                val selected = current == mode
+                view.setBackgroundResource(
+                    if (selected) R.drawable.bg_segment_selected else 0
+                )
+                view.setTextColor(
+                    if (selected) getColor(R.color.ds_bg_base)
+                    else getColor(R.color.ds_text_secondary)
+                )
+            }
+        }
+        fun pickTheme(mode: ThemeMode) {
+            if (ThemePrefs.get(this) == mode) return
+            ThemePrefs.set(this, mode)
+            recreate()
+        }
+        renderThemeSegments()
+        segLight.setOnClickListener { pickTheme(ThemeMode.LIGHT) }
+        segSystem.setOnClickListener { pickTheme(ThemeMode.SYSTEM) }
+        segDark.setOnClickListener { pickTheme(ThemeMode.DARK) }
+
+        // —— 显示：状态栏样式（v1.2.122 三档，改完回主界面即时生效，不重启） ——
+        statusBarMode = StatusBarPrefs.get(this)
+        findViewById<TextView>(R.id.valStatusBar).text = getString(statusBarLabel(statusBarMode))
+        findViewById<LinearLayout>(R.id.rowStatusBar).setOnClickListener { showStatusBarDialog() }
+
+        // —— 显示：底部安全区适配（v1.2.122，壳侧注入 CSS，默认开，可一键关）——
+        val swInsetFix = findViewById<android.widget.Switch>(R.id.swInsetFix)
+        swInsetFix.isChecked = InsetFixPrefs.isEnabled(this)
+        swInsetFix.setOnCheckedChangeListener { _, checked -> InsetFixPrefs.set(this, checked) }
+        findViewById<LinearLayout>(R.id.rowInsetFix).setOnClickListener {
+            swInsetFix.isChecked = !swInsetFix.isChecked
+        }
+
+        // —— 显示：重新加载注入（v1.2.122，改完 inject.json 不用重启 App）——
+        findViewById<LinearLayout>(R.id.rowReloadInject).setOnClickListener {
+            InjectReloadPrefs.request(this)
+            Toast.makeText(this, getString(R.string.inject_reload_queued), Toast.LENGTH_SHORT).show()
         }
 
         // —— 权限中心：运行权限模式 ——
@@ -252,9 +318,11 @@ class SettingsActivity : Activity() {
     private fun refreshAll() {
         val prefs = getSharedPreferences(PREFS_UI, MODE_PRIVATE)
         orientMode = OrientationPrefs.get(this)
+        statusBarMode = StatusBarPrefs.get(this)
         pageScale = prefs.getInt(KEY_PAGE_SCALE, DEFAULT_PAGE_SCALE)
 
         findViewById<TextView>(R.id.valLandscape).text = getString(orientLabel(orientMode))
+        findViewById<TextView>(R.id.valStatusBar).text = getString(statusBarLabel(statusBarMode))
         findViewById<TextView>(R.id.valScale).text = "$pageScale%"
         findViewById<TextView>(R.id.valPriv).text = privLabel(Privilege.getMode(this))
         findViewById<TextView>(R.id.valRootStatus).let {
@@ -262,7 +330,7 @@ class SettingsActivity : Activity() {
             it.text = getString(
                 if (rootOk) R.string.setting_root_status_yes else R.string.setting_root_status_no
             )
-            it.setTextColor(if (rootOk) 0xFF6EE7B7.toInt() else 0xFF8A94A3.toInt())
+            it.setTextColor(if (rootOk) getColor(R.color.ds_success) else getColor(R.color.ds_text_secondary))
         }
         refreshShizuku()
         refreshAccess()
@@ -279,7 +347,7 @@ class SettingsActivity : Activity() {
         val count = ExtensionManager(this).activeCount()
         val v = findViewById<TextView>(R.id.valExt)
         v.text = getString(R.string.setting_ext_active_count, count)
-        v.setTextColor(if (count > 0) 0xFF6EE7B7.toInt() else 0xFF8A94A3.toInt())
+        v.setTextColor(if (count > 0) getColor(R.color.ds_success) else getColor(R.color.ds_text_secondary))
     }
 
     /** 权限中心：所有文件访问状态（MANAGE_EXTERNAL_STORAGE，Android 11+ 系统设置页授予；
@@ -291,7 +359,7 @@ class SettingsActivity : Activity() {
             android.content.pm.PackageManager.PERMISSION_GRANTED
         val v = findViewById<TextView>(R.id.valStorage)
         v.text = getString(if (granted) R.string.storage_granted else R.string.storage_denied)
-        v.setTextColor(if (granted) 0xFF6EE7B7.toInt() else 0xFFFFB74D.toInt())
+        v.setTextColor(if (granted) getColor(R.color.ds_success) else getColor(R.color.ds_warn))
     }
 
     /** 权限中心：TTS 引擎可用性（列出 TextToSpeechService 提供方，不触发绑定） */
@@ -299,7 +367,7 @@ class SettingsActivity : Activity() {
         val n = TtsManager.engineCount(this)
         val v = findViewById<TextView>(R.id.valTts)
         v.text = if (n == 0) getString(R.string.tts_missing) else getString(R.string.tts_engines, n)
-        v.setTextColor(if (n > 0) 0xFF6EE7B7.toInt() else 0xFF8A94A3.toInt())
+        v.setTextColor(if (n > 0) getColor(R.color.ds_success) else getColor(R.color.ds_text_secondary))
     }
 
     /** 权限中心：通知权限（Android 13+ 运行时授权；低版本默认持有） */
@@ -311,7 +379,7 @@ class SettingsActivity : Activity() {
         else true
         val v = findViewById<TextView>(R.id.valNotif)
         v.text = getString(if (granted) R.string.notif_granted else R.string.notif_denied)
-        v.setTextColor(if (granted) 0xFF6EE7B7.toInt() else 0xFF8A94A3.toInt())
+        v.setTextColor(if (granted) getColor(R.color.ds_success) else getColor(R.color.ds_text_secondary))
     }
 
     /** 麦克风权限是否已授予（语音输入的前提） */
@@ -324,7 +392,7 @@ class SettingsActivity : Activity() {
         val granted = hasMicPermission()
         val v = findViewById<TextView>(R.id.valMic)
         v.text = getString(if (granted) R.string.mic_granted else R.string.mic_denied)
-        v.setTextColor(if (granted) 0xFF6EE7B7.toInt() else 0xFF8A94A3.toInt())
+        v.setTextColor(if (granted) getColor(R.color.ds_success) else getColor(R.color.ds_text_secondary))
     }
 
     /** 权限回调：麦克风授权结果 → 刷新状态行 */
@@ -353,16 +421,16 @@ class SettingsActivity : Activity() {
         when {
             Privilege.shizukuUsable() -> {
                 v.text = getString(R.string.setting_shizuku_granted)
-                v.setTextColor(0xFF6EE7B7.toInt())
+                v.setTextColor(getColor(R.color.ds_success))
             }
             Privilege.shizukuServerRunning() -> {
                 v.text = getString(R.string.setting_shizuku_request)
-                v.setTextColor(0xFFFFB74D.toInt())
+                v.setTextColor(getColor(R.color.ds_warn))
                 Privilege.requestShizukuPermission(SHIZUKU_REQ)
             }
             else -> {
                 v.text = getString(R.string.setting_shizuku_absent)
-                v.setTextColor(0xFF8A94A3.toInt())
+                v.setTextColor(getColor(R.color.ds_text_secondary))
             }
         }
     }
@@ -376,7 +444,7 @@ class SettingsActivity : Activity() {
         findViewById<TextView>(R.id.valAccess).text =
             getString(if (on) R.string.state_on else R.string.state_off)
         findViewById<TextView>(R.id.valAccess).setTextColor(
-            if (on) 0xFF6EE7B7.toInt() else 0xFF8A94A3.toInt()
+            if (on) getColor(R.color.ds_success) else getColor(R.color.ds_text_secondary)
         )
     }
 
@@ -425,49 +493,75 @@ class SettingsActivity : Activity() {
             .showStyled()
     }
 
+    // ================= 显示：状态栏样式（v1.2.122 三档） =================
+
+    private fun statusBarLabel(mode: StatusBarMode): Int = when (mode) {
+        StatusBarMode.TRANSPARENT -> R.string.setting_status_bar_transparent
+        StatusBarMode.THEME -> R.string.setting_status_bar_theme
+        StatusBarMode.SYSTEM -> R.string.setting_status_bar_system
+    }
+
+    /**
+     * 三档单选：透明 / 跟随主题色 / 跟随系统。
+     * 只落库，回到主界面时 MainActivity.onResume → applyStatusBar() 即时生效（不重启）。
+     */
+    private fun showStatusBarDialog() {
+        val modes = listOf(
+            StatusBarMode.TRANSPARENT,
+            StatusBarMode.THEME,
+            StatusBarMode.SYSTEM,
+        )
+        val labels = modes.map { getString(statusBarLabel(it)) }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.setting_status_bar))
+            .setSingleChoiceItems(labels, modes.indexOf(statusBarMode)) { dlg, which ->
+                dlg.dismiss()
+                val picked = modes[which]
+                if (picked == statusBarMode) return@setSingleChoiceItems
+                statusBarMode = picked
+                StatusBarPrefs.set(this, picked)
+                findViewById<TextView>(R.id.valStatusBar).text = getString(statusBarLabel(picked))
+                Toast.makeText(
+                    this,
+                    getString(statusBarLabel(picked)) + " · " + getString(R.string.setting_applies_live),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            .showStyled()
+    }
+
     // ================= 显示：页面缩放 =================
 
     /**
-     * 页面缩放对话框：SeekBar 滑条连续拖动（范围 50–150，步长 5），实时显示百分比。
-     * 落库后 MainActivity onResume 读取并 reload 生效。
+     * 页面缩放对话框（v1.2.122 收口为五档）。
+     *
+     * 口径：**屏幕适配交给系统**（WebView 按设备密度自动排，默认不调用 setInitialScale）；
+     * 这里只是给用户一个「我字太小/太大」的手动档，非 100% 才会真的调用缩放。
+     * 100% 是推荐值——非 100% 时 WebView 会按百分比改布局宽，可能影响排版。
      */
     private fun showScaleDialog() {
-        val value = TextView(this).apply {
-            textSize = 26f
-            gravity = Gravity.CENTER
-            text = "$pageScale%"
-            setPadding(0, dp(8), 0, dp(4))
-        }
-        val bar = SeekBar(this).apply {
-            max = (MAX_PAGE_SCALE - MIN_PAGE_SCALE) / SCALE_STEP   // 索引 0..20 → 50..150 步长5
-            progress = (pageScale - MIN_PAGE_SCALE) / SCALE_STEP
-            progressTintList = android.content.res.ColorStateList.valueOf(0xFF7DD3FC.toInt())
-            thumbTintList = android.content.res.ColorStateList.valueOf(0xFF7DD3FC.toInt())
-            setPadding(dp(24), 0, dp(24), 0)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                    value.text = "${MIN_PAGE_SCALE + progress * SCALE_STEP}%"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(16), dp(24), dp(8))
-            addView(value)
-            addView(bar)
-        }
+        val steps = PAGE_SCALE_STEPS
+        val labels = steps.map {
+            if (it == DEFAULT_PAGE_SCALE) "$it% · " + getString(R.string.scale_recommended) else "$it%"
+        }.toTypedArray()
+        val current = steps.indexOf(pageScale).takeIf { it >= 0 }
+            ?: steps.indexOf(DEFAULT_PAGE_SCALE)
         AlertDialog.Builder(this)
-            .setTitle(getString(R.string.scale_title))
-            .setView(box)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                pageScale = MIN_PAGE_SCALE + bar.progress * SCALE_STEP
+            .setTitle(getString(R.string.setting_scale))
+            .setSingleChoiceItems(labels, current) { dlg, which ->
+                dlg.dismiss()
+                val picked = steps[which]
+                if (picked == pageScale) return@setSingleChoiceItems
+                pageScale = picked
                 getSharedPreferences(PREFS_UI, MODE_PRIVATE)
                     .edit().putInt(KEY_PAGE_SCALE, pageScale).apply()
                 findViewById<TextView>(R.id.valScale).text = "$pageScale%"
+                Toast.makeText(
+                    this,
+                    "$pageScale% · " + getString(R.string.setting_applies_live),
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
-            .setNegativeButton(android.R.string.cancel, null)
             .showStyled()
     }
 
@@ -507,12 +601,12 @@ class SettingsActivity : Activity() {
                 addView(TextView(this@SettingsActivity).apply {
                     text = label
                     textSize = 16f
-                    setTextColor(0xFFFFFFFF.toInt())
+                    setTextColor(getColor(R.color.ds_text_primary))
                 })
                 if (sub.isNotEmpty()) addView(TextView(this@SettingsActivity).apply {
                     text = sub
                     textSize = 12f
-                    setTextColor(0xFF8A94A3.toInt())
+                    setTextColor(getColor(R.color.ds_text_secondary))
                 })
             }
             return LinearLayout(this).apply {
@@ -665,10 +759,9 @@ class SettingsActivity : Activity() {
         const val KEY_PAGE_SCALE = "page_scale"
         const val KEY_EXPERIMENTAL = DshApp.KEY_EXPERIMENTAL
 
-        const val DEFAULT_PAGE_SCALE = 90
-        const val MIN_PAGE_SCALE = 50
-        const val MAX_PAGE_SCALE = 150
-        const val SCALE_STEP = 5
+        const val DEFAULT_PAGE_SCALE = 100
+        /** 可选档位（v1.2.122）：只有非 100% 才调用 setInitialScale */
+        val PAGE_SCALE_STEPS = intArrayOf(80, 90, 100, 110, 120)
     }
 
 }

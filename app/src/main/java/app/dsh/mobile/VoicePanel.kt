@@ -26,7 +26,7 @@ import android.widget.TextView
 class VoicePanel(private val svc: AccessibilityService) {
 
 
-    private val ctx: Context = svc.applicationContext
+    private val ctx: Context = ThemeHelper.wrap(svc.applicationContext)
     private var view: View? = null
     private var input: EditText? = null
     private var hint: TextView? = null

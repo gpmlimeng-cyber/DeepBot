@@ -13,8 +13,8 @@
 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <solid android:color="#A6161C24" />
+    <solid android:color="@color/ds_overlay_ball_bg" />
     <stroke
         android:width="1dp"
-        android:color="#33FFFFFF" />
+        android:color="@color/ds_border_strong" />
 </shape>

@@ -16,7 +16,7 @@ import android.widget.Toast
 class AboutActivity : Activity() {
 
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,15 +63,15 @@ class AboutActivity : Activity() {
                     r.hasUpdate -> {
                         pendingReleaseUrl = r.releaseUrl
                         tv.text = getString(R.string.about_update_available, r.latestTag)
-                        tv.setTextColor(0xFF7DD3FC.toInt())
+                        tv.setTextColor(getColor(R.color.ds_accent))
                     }
                     r.error.isNotEmpty() -> {
                         tv.text = getString(R.string.about_update_failed, r.error)
-                        tv.setTextColor(0xFF8A94A3.toInt())
+                        tv.setTextColor(getColor(R.color.ds_text_secondary))
                     }
                     else -> {
                         tv.text = getString(R.string.about_update_latest)
-                        tv.setTextColor(0xFF81C995.toInt())
+                        tv.setTextColor(getColor(R.color.ds_success))
                     }
                 }
             }

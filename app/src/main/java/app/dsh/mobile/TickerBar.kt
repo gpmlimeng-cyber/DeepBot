@@ -38,7 +38,7 @@ import app.dsh.mobile.engine.SessionTail
  */
 class TickerBar(private val svc: AccessibilityService) {
 
-    private val ctx: Context = svc.applicationContext
+    private val ctx: Context = ThemeHelper.wrap(svc.applicationContext)
     private val wm: WindowManager =
         svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val handler = Handler(Looper.getMainLooper())
@@ -214,7 +214,7 @@ class TickerBar(private val svc: AccessibilityService) {
             snap.toolLines.forEach {
                 val line = TextView(ctx).apply {
                     text = "· $it"
-                    setTextColor(0xFF8A94A3.toInt())
+                    setTextColor(ctx.getColor(R.color.ds_text_secondary))
                     textSize = 11f
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END

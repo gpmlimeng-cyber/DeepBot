@@ -28,7 +28,7 @@ import android.widget.Toast
 class AsrAppActivity : Activity() {
 
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

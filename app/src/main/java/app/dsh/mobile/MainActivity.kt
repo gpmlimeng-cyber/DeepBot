@@ -11,14 +11,20 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import android.view.View
+import android.view.ViewStub
+import android.view.ViewTreeObserver
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 import app.dsh.mobile.engine.EngineSupervisor
+import app.dsh.mobile.engine.InjectSpec
 import app.dsh.mobile.engine.Privilege
 import app.dsh.mobile.service.EngineService
 import kotlinx.coroutines.CoroutineScope
@@ -43,8 +49,6 @@ class MainActivity : Activity() {
     private var urlLoaded = false
 
     /** 桌面模式：桌面 UA + 固定 1280px 视口 + 手势缩放（手机浏览器「电脑模式」等价物） */
-    private var desktopMode = false
-    private var defaultUa: String = ""
 
     /** 屏幕朝向偏好（v1.2.120）：portrait 锁竖 / landscape 锁横+桌面布局 / auto 跟随旋转 */
     private var orientationMode: OrientationMode = OrientationMode.PORTRAIT
@@ -55,14 +59,61 @@ class MainActivity : Activity() {
     /** 本页当前生效的语言代码（onResume 比对，变了就重建） */
     private var appliedLocale: String = ""
 
+    /** 本页当前生效的主题（onResume 比对，设置页改过就重建） */
+    private var appliedTheme: ThemeMode = ThemeMode.SYSTEM
+
+    // ---- 启动页（v1.2.121）----
+    /** 主内容（WebView + 工具栏）是否已由 ViewStub 填进来；首帧之前为 false */
+    private var mainReady = false
+    /** onResume 里被推迟的引擎/门禁逻辑，等内容填好后补跑 */
+    private var pendingResume = false
+    /** 启动页是否已经淡出，避免重复动画 */
+    private var splashDismissed = false
+    /** WebView 首屏页面是否已加载完（与引擎 Healthy 一起决定何时淡出启动页） */
+    private var pageReady = false
+    /** 最近一次安装进度（0..1，null = 不确定） */
+    private var lastProgress: Float? = null
+    /** 最近一次引擎状态（启动页与主界面共用） */
+    private var lastState: EngineSupervisor.State? = null
+    /** Activity 创建时刻 / 进程启动时刻（算「点图标 → 首帧」） */
+    private var splashAtMs = 0L
+    private var splashProcessStartMs = 0L
+    /** 引擎就绪时间戳只记一次（TTFD 对照用） */
+    private var readyLogged = false
+
+    // ---- 状态栏 / 安全区（v1.2.122）----
+    private var statusBarMode: StatusBarMode = StatusBarMode.TRANSPARENT
+    /** 注入规则来源（shared/private/builtin），只用于变化时打一行日志 */
+    private var lastInjectSource: String = ""
+
+    /** IME（软键盘）底部 inset，物理 px；edge-to-edge 下窗口不 resize，只能靠它补偿 */
+    private var insetImePx = 0
+
+    private var insetTopPx = 0
+    private var insetBottomPx = 0
+
     private val uiScope = CoroutineScope(Dispatchers.Main)
+
+    // ---- 顶部工具栏自动隐藏（v1.2.121）----
+    /** 延迟收起的定时器；只在「就绪」那次跃迁上排队一次 */
+    private val autoHideHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    /** 本轮是否仍允许自动收起（用户手动唤回后置 false，不再自动收） */
+    private var autoHideArmed = true
+    /** 用户是否手动唤回过工具栏（本轮不再自动收起） */
+    private var userShowedToolbar = false
+    /** 上一次 render 是否处于「已就绪」，用于只在状态跃迁时动作 */
+    private var lastStateReady = false
+    /** 延迟到点后执行收起；到点前用户唤回会取消它 */
+    private val autoHideRunnable = Runnable {
+        if (!userShowedToolbar) hideToolbar()
+    }
 
     /** 待回传的文件选择结果（onShowFileChooser → onActivityResult 之间持有；null 表示无进行中请求） */
     private var pendingFileCallback: android.webkit.ValueCallback<Array<Uri>>? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,28 +124,77 @@ class MainActivity : Activity() {
             finish()
             return
         }
+        // 首帧优先（v1.2.121）：这次 setContentView 只 inflate 启动页，
+        // WebView 留在 ViewStub 里，等启动页画出第一帧后再填。
         setContentView(R.layout.activity_main)
+        splashAtMs = SystemClock.uptimeMillis()
+        splashProcessStartMs =
+            if (Build.VERSION.SDK_INT >= 24) android.os.Process.getStartUptimeMillis() else splashAtMs
+        Log.i("Splash", "onCreate +${splashAtMs - splashProcessStartMs}ms")
 
         // 记录本页生效的语言（onResume 里比对，设置页改过就重建本页）
         appliedLocale = LocaleHelper.get(this)
+        appliedTheme = ThemePrefs.get(this)
+
+        setupSplash()
+
+        // 状态栏样式与安全区（v1.2.122）：透明/主题色走 edge-to-edge，
+        // 高度通过 CSS 变量交给页面自己留白（ds-bot 的底栏/输入框按 --dsh-safe-bottom 排）
+        installInsetsListener()
+        applyStatusBar()
+
+        // 读回用户保存的页面缩放与屏幕朝向偏好（都只读 SharedPreferences，轻量）
+        readUiPrefs()
+        applyOrientation(orientationMode)
+
+        // 启动页画出第一帧后再填主内容：WebView 初始化不占首帧
+        val splash = findViewById<View>(R.id.splashRoot)
+        var drawListener: ViewTreeObserver.OnDrawListener? = null
+        var firstFrameHandled = false
+        drawListener = object : ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                if (mainReady || firstFrameHandled) return
+                firstFrameHandled = true
+                Log.i("Splash", "first frame +${SystemClock.uptimeMillis() - splashProcessStartMs}ms")
+                // ⚠️ 硬性规则：onDraw 回调里不能同步 removeOnDrawListener，否则抛
+                // IllegalStateException: Cannot call removeOnDrawListener inside of onDraw
+                //（v1.2.121 首版就是在这里崩的）。必须 post 到下一帧再移除。
+                splash.post {
+                    runCatching {
+                        drawListener?.let { splash.viewTreeObserver.removeOnDrawListener(it) }
+                    }
+                }
+                // 结构变动同样放到本帧绘制之后
+                splash.post { inflateMainContent() }
+            }
+        }
+        splash.viewTreeObserver.addOnDrawListener(drawListener!!)
+
+        val app = application as DshApp
+        uiScope.launch {
+            app.supervisor.state.collectLatest { render(it) }
+        }
+        uiScope.launch {
+            app.supervisor.installProgress.collectLatest { renderProgress(it) }
+        }
+    }
+
+    /**
+     * 主内容延迟填充（v1.2.121）：启动页第一帧画完之后才 inflate WebView 与工具栏，
+     * 再把原先 onCreate 里的绑定逻辑补上。这样冷启动首帧只承担启动页的布局成本。
+     */
+    private fun inflateMainContent() {
+        if (mainReady) return
+        findViewById<ViewStub>(R.id.mainContentStub)?.inflate()
+        mainReady = true
 
         statusBar = findViewById(R.id.statusBar)
         // 先赋值字段再配置：setupWebView 内部读取的是 this.webView，
         // 若写在 apply{} 里会在赋值完成前执行而触发 UninitializedPropertyAccessException。
         webView = findViewById<WebView>(R.id.webView)
         setupWebView()
-        // 读回用户保存的页面缩放与屏幕朝向偏好
-        readUiPrefs()
-        applyOrientation(orientationMode)
-        // v1.2.120：冷启动也要把桌面渲染落到偏好 —— 旧实现只在 onResume 的「偏好变化」
-        // 分支里 setDesktop，导致 landscape=true 冷启动时 UA/视口/缩放手势全是竖屏那套，
-        // 直到用户在设置里动过一次或旋转设备才恢复。
-        setDesktop(shouldUseDesktop())
 
         // 热重启：用户显式动作，完整 stop→start 链路；urlLoaded 复位让 Healthy 后重载 3080。
-        // restart() 自身立即返回（内部串行 + 先置「启动中」），无需再套线程；重复点击幂等。
-        // Toast 给即时反馈：引擎优雅退出最长等 10s，期间状态栏可能来不及刷新（实测观感
-        // 是「点了没反应」于是连点三下 → 触发并发 stop/start 踩踏）。
         findViewById<TextView>(R.id.btnRestart).setOnClickListener {
             urlLoaded = false
             (application as DshApp).supervisor.restart()
@@ -114,22 +214,28 @@ class MainActivity : Activity() {
         statusBar.setOnClickListener { toggleToolbar() }
         // 把手：可拖到屏幕边缘任意位置（避让遮挡）；移动距离小于阈值视为点击唤回工具栏
         setupHandleBar()
+        // 壳内悬浮层避让系统栏（把手/工具栏/进度条），首帧前 inset 可能还没到
+        applyShellInsets()
 
-        // 语音输入（v1.2.65）：麦克风入口已移交无障碍服务（不再依赖本 Activity 存活）；
-        // 这里只注册「把文字送进 WebUI」的能力，供服务侧识别完成后调用。
+        // 语音输入（v1.2.65）：这里只注册「把文字送进 WebUI」的能力
         VoiceBridge.registerSender { text -> sendVoiceText(text) }
 
-        val app = application as DshApp
-        uiScope.launch {
-            app.supervisor.state.collectLatest { render(it) }
-        }
-        uiScope.launch {
-            app.supervisor.installProgress.collectLatest { renderProgress(it) }
+        // 把当前状态同步到主界面（启动页期间收到的状态不会丢）
+        lastState?.let { render(it) }
+        lastProgress?.let { renderProgress(it) }
+
+        // onResume 若在内容就绪前已经跑过（冷启动一定是），这里补跑被推迟的部分
+        if (pendingResume) {
+            pendingResume = false
+            onResumeHeavy()
         }
     }
 
     override fun onResume() {
         super.onResume()
+        AppVisibility.onResume()
+        // 设置页可能改过状态栏样式：返回时重新应用（不重启 Activity）
+        applyStatusBar()
         // 🔴 v1.2.91：恢复 WebView 的 JS 定时器。
         // 主人实测「回到后台时通过语音发送消息，消息发出去了但模型不响应，
         // 切回前台才开始响应」—— 根因就是这里缺 webView.onResume()：
@@ -139,6 +245,17 @@ class MainActivity : Activity() {
             runCatching { webView.onResume() }
             runCatching { webView.resumeTimers() }
         }
+        // 首帧优先（v1.2.121）：主内容还没填进来时，门禁检测（会创建 WebView）与
+        // 拉起引擎都推迟到启动页画完之后；冷启动一定是这条路径。
+        if (!mainReady) {
+            pendingResume = true
+            return
+        }
+        onResumeHeavy()
+    }
+
+    /** onResume 里的重活（门禁/引擎/看门狗/偏好同步），首帧之后才允许跑 */
+    private fun onResumeHeavy() {
         // Web 内核版本门禁（v1.2.100，酷安用户反馈引出的需求）：
         // WebView < Chrome 85 时引擎前端必白屏（??= 等解析期语法 polyfill 补不了），
         // 与其让用户看「进程异常退出/白屏」无限循环，不如先检测、给出明确升级指引，
@@ -160,15 +277,27 @@ class MainActivity : Activity() {
             recreate()
             return
         }
+        // 从设置页返回：主题若被改过，同样原地重建（重走 attachBaseContext → 换色板）
+        val themeNow = ThemePrefs.get(this)
+        if (themeNow != appliedTheme) {
+            appliedTheme = themeNow
+            recreate()
+            return
+        }
+        // 从设置页返回：点过「重新加载注入」就重载一次页面（v1.2.122）。
+        // 注入规则每次页面加载都会重读 inject.json，所以重载 = 新规则生效。
+        if (InjectReloadPrefs.consume(this) && ::webView.isInitialized) {
+            webView.reload()
+        }
         // 从设置页返回：重新读取朝向/缩放偏好，若被改则同步并重载
         val oldScale = pageScale
         val oldMode = orientationMode
         readUiPrefs()
         if (oldMode != orientationMode) {
-            setDesktop(shouldUseDesktop())
             applyOrientation(orientationMode)
         }
         if (oldScale != pageScale || oldMode != orientationMode) {
+            applyPageScale()
             webView.reload()
         }
     }
@@ -185,6 +314,7 @@ class MainActivity : Activity() {
      * 这是「后台也要能收到 AI 回复」这个需求的必要成本。
      */
     override fun onPause() {
+        AppVisibility.onPause()
         // 后台停看门狗：系统会节流后台 WebView，探针超时会造成误判并反复重建页面
         stopHangWatchdog()
         // 刻意不调用 super.onPause() 里的 WebView 暂停逻辑；
@@ -202,31 +332,20 @@ class MainActivity : Activity() {
         orientationMode = OrientationPrefs.get(this)
     }
 
-    /**
-     * v1.2.120：当前是否应该走桌面渲染。
-     * landscape = 恒桌面；portrait = 恒移动；auto = 看**实际**朝向
-     * （物理横屏 → 桌面布局，竖屏 → 移动布局），旋转时由
-     * onConfigurationChanged 重新求值。
-     */
-    private fun shouldUseDesktop(): Boolean = when (orientationMode) {
-        OrientationMode.LANDSCAPE -> true
-        OrientationMode.PORTRAIT -> false
-        OrientationMode.AUTO ->
-            resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    }
-
     private fun setupWebView() {
-        defaultUa = webView.settings.userAgentString
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             allowFileAccess = false       // 关闭文件域，收窄 WebView 攻击面
             allowContentAccess = false
             javaScriptCanOpenWindowsAutomatically = false
-            // 竖屏页面缩小靠 viewport meta 改写（同桌面模式机制），useWideViewPort 必须开。
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            applyZoomControls(desktopMode)
+            // v1.2.122：视口恒定走手机。useWideViewPort=false 表示**忽略页面的 viewport meta**，
+            // 布局宽永远等于 WebView 宽度（本机 = 424 CSS px），980 那条桌面宽度就不会再回来。
+            // 代价是 meta 里的 initial-scale 不再生效，所以页面缩放改由 setInitialScale() 下发
+            // （见 loadLocalUrl / applyPageScale）。
+            useWideViewPort = false
+            loadWithOverviewMode = false
+            applyZoomControls(false)
         }
         // ── WebView 诊断（v1.2.49）：用户报「用不了」时能拿到确凿信息 ────────────
         // 背景：华为 Mate40 报 `AbortSignal.any is not a function`、另有 Android 16 用户
@@ -239,7 +358,7 @@ class MainActivity : Activity() {
                 val text = msg.message() ?: return false
                 // 只记有价值的信息：错误/警告，或我们自己的自检标记
                 val important = msg.messageLevel() >= android.webkit.ConsoleMessage.MessageLevel.WARNING ||
-                    text.contains("[dsh-android]")
+                    text.contains("[dsh-android]") || text.startsWith("DSHPROBE2:")
                 if (important) {
                     logWebView("console/${msg.messageLevel()} ${msg.sourceId()}:${msg.lineNumber()} $text")
                 }
@@ -329,22 +448,26 @@ class MainActivity : Activity() {
                 return true   // 已自行处理，别杀 App
             }
 
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                // 页面一开始就把安全区变量塞进去（v1.2.122），避免首帧按默认值留白
+                injectSafeInsets()
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 if (view == null) return
+                // 页面加载完再补一次（部分页面会重建 :root 样式）
+                injectSafeInsets()
+                // 首屏已出（v1.2.121）：引擎若已就绪，就把启动页淡出交给网页
+                pageReady = true
+                maybeDismissSplash()
                 // 环境自检：把 WebView 版本与关键 API 存在性写进日志，用户报障时一眼定位
                 view.evaluateJavascript(WEBVIEW_SELFCHECK_JS, null)
-                // 桌面模式：视口改写为固定 1280px（响应式走桌面分支，侧栏完整展开）。
-                if (desktopMode) {
-                    view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
-                    return
-                }
-                // 竖屏：全交给 viewport meta 的 initial-scale 控制显示缩放（浏览器 Ctrl- 做法）。
-                // width=device-width → 布局宽=屏宽（无横向滚动）；initial-scale=R 直接缩放显示
-                //（缩小→按钮变小看更多、整页塞进屏；放大→内容变大）；min=max=R+user-scalable=no
-                // 彻底锁死（既不 clamp 到 100%，也不许用户手动改）。setInitialScale 易被 meta
-                // 干扰（maximum-scale=1 会把它 clamp 回 100%），故弃用。
-                view.evaluateJavascript(portraitViewportJs(pageScale / 100f), null)
+
+                // v1.2.122：useWideViewPort=false 之后页面 meta 被忽略，缩放改用 setInitialScale
+                // 下发（以前弃用它是因为 meta 的 maximum-scale 会把它 clamp 回 100%，现在不存在了）。
+                applyPageScale()
             }
 
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
@@ -370,6 +493,7 @@ class MainActivity : Activity() {
 
     /** 统一的回环页加载入口：缩放统一由 onPageFinished 的 viewport meta 接管，这里只导航。 */
     private fun loadLocalUrl(url: String) {
+        applyPageScale()
         webView.loadUrl(url)
     }
 
@@ -383,24 +507,34 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 只改桌面渲染的 UA + 手势缩放开关，不 reload——reload 统一由旋转/onResume 回调做（避免双重整页重载卡顿）。
-     *  viewport 改写统一在 onPageFinished 里做。 */
-    private fun setDesktop(enable: Boolean) {
-        desktopMode = enable
-        webView.settings.userAgentString = if (enable) DESKTOP_UA else defaultUa
-        applyZoomControls(enable)
-    }
-
     /** 工具栏收起/唤回：收起时网页全屏，仅留顶部小把手提示可恢复 */
     private fun toggleToolbar() {
         val row = findViewById<View>(R.id.statusBarRow)
+        if (row.visibility == View.VISIBLE) hideToolbar() else showToolbar()
+    }
+
+    /** 收起横栏，只留把手（网页全屏）。自动收起与手动点按钮共用这一半 */
+    private fun hideToolbar() {
+        findViewById<View>(R.id.statusBarRow).visibility = View.GONE
         val handle = findViewById<View>(R.id.handleBar)
-        if (row.visibility == View.VISIBLE) {
-            row.visibility = View.GONE
-            handle.visibility = View.VISIBLE
-        } else {
-            row.visibility = View.VISIBLE
-            handle.visibility = View.GONE
+        handle.visibility = View.VISIBLE
+        // 全屏后 y=0 落在状态栏里（v1.2.122）：把手默认放到状态栏下缘，
+        // post 一次等布局完成，否则父容器高度还是 0，clamp 会把它按在顶上。
+        handle.post { positionHandleDefault() }
+    }
+
+    /**
+     * 唤回横栏。
+     * @param fromUser 用户手动操作（点横栏空白处/点把手）时为 true：
+     *   本轮不再自动收起；系统在「启动中/出错」等状态主动亮出横栏时传 false。
+     */
+    private fun showToolbar(fromUser: Boolean = true) {
+        findViewById<View>(R.id.statusBarRow).visibility = View.VISIBLE
+        findViewById<View>(R.id.handleBar).visibility = View.GONE
+        if (fromUser) {
+            userShowedToolbar = true
+            autoHideArmed = false
+            autoHideHandler.removeCallbacks(autoHideRunnable)
         }
     }
 
@@ -425,8 +559,9 @@ class MainActivity : Activity() {
                     val parent = v.parent as View
                     v.translationX = (initTx + (ev.rawX - rawX0))
                         .coerceIn(-v.width * 0.6f, parent.width - v.width * 0.4f)
-                    v.translationY = (initTy + (ev.rawY - rawY0))
-                        .coerceIn(0f, (parent.height - v.height).coerceAtLeast(0).toFloat())
+                    // v1.2.122：上下边界按系统栏收住 —— 上不进状态栏、下不进手势条
+                    val (minY, maxY) = handleYRange(v)
+                    v.translationY = (initTy + (ev.rawY - rawY0)).coerceIn(minY, maxY)
                     true
                 }
                 android.view.MotionEvent.ACTION_UP -> {
@@ -439,38 +574,132 @@ class MainActivity : Activity() {
         }
     }
 
+    // ==================== 壳内悬浮层避让系统栏（v1.2.122） ====================
+
+    /** dp → px（本文件没有全局换算工具，就地用一个） */
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
+
+    /**
+     * 把壳自己的悬浮层从状态栏/手势条底下挪出来。全屏（edge-to-edge）之后
+     * y=0 就是屏幕物理顶端，把手、工具栏、进度条都按同一个顶部 inset 下移。
+     *
+     * 只动壳内的原生 View，不碰网页内容（网页那侧由注入的 CSS 变量负责）。
+     */
+    private fun applyShellInsets() {
+        val top = insetTopPx.coerceAtLeast(0)
+        val bottom = insetBottomPx.coerceAtLeast(0)
+
+        // 工具栏：自身 40dp 高，整条下移 top，内容区仍是 40dp
+        findViewById<View>(R.id.statusBarRow)?.let { row ->
+            val lp = row.layoutParams
+            val h = dp(40) + top
+            if (lp.height != h) {
+                lp.height = h
+                row.layoutParams = lp
+            }
+            if (row.paddingTop != top) row.setPadding(0, top, 0, 0)
+        }
+
+        // 解压进度条：原来固定 marginTop 40dp，会正好压在状态栏里
+        findViewById<View>(R.id.installProgress)?.let { bar ->
+            val lp = bar.layoutParams as? android.view.ViewGroup.MarginLayoutParams ?: return@let
+            val m = dp(40) + top
+            if (lp.topMargin != m) {
+                lp.topMargin = m
+                bar.layoutParams = lp
+            }
+        }
+
+        clampHandle()
+    }
+
+    /** 把手可停留的纵向区间（translationY 语义）：上界=状态栏下缘，下界=手势条上缘 */
+    private fun handleYRange(v: View): Pair<Float, Float> {
+        val parent = v.parent as? View ?: return 0f to 0f
+        val lp = v.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+        val base = (lp?.topMargin ?: 0).toFloat()
+        val minY = insetTopPx + dp(2) - base
+        val maxY = (parent.height - insetBottomPx.coerceAtLeast(0) - v.height) - base
+        return minY to maxY.coerceAtLeast(minY)
+    }
+
+    /** 把手回到默认位置（状态栏下缘），每次收起工具栏时调用 */
+    private fun positionHandleDefault() {
+        val h = findViewById<View>(R.id.handleBar) ?: return
+        h.translationY = handleYRange(h).first
+    }
+
+    /** inset 变化（旋转/手势条切换）后把把手夹回合法区间，别让它留在状态栏里 */
+    private fun clampHandle() {
+        val h = findViewById<View>(R.id.handleBar) ?: return
+        if (h.parent == null || (h.parent as View).height <= 0) return
+        val (minY, maxY) = handleYRange(h)
+        h.translationY = h.translationY.coerceIn(minY, maxY)
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // 旋转后屏宽变化 → 需要重算适配视口（reload 后 onPageFinished 会按当前模式
-        // 与 pageScale 重写 viewport meta）。竖屏旋转屏宽同样变，故统一 reload。
-        // 同时同步手势缩放开关（竖屏锁死、桌面保留），防止切屏后对手势失效。
-        // v1.2.120：auto 模式下桌面渲染跟随**实际**朝向——旋转后先按新朝向求值，
-        // 否则横屏后仍是竖屏那套 UA/视口。setDesktop 自身不 reload，reload 紧随其后。
-        setDesktop(shouldUseDesktop())
-        applyZoomControls(desktopMode)
+        // 旋转后屏宽变化 → reload 一次让布局重新按 device-width 排。
+        // v1.2.122：不再按朝向切桌面 UA（DeepBot 只有一个手机形态），
+        // 所以这里只剩重载，没有 UA/视口求值。
         webView.reload()
     }
 
     /**
-     * 竖屏视口缩放 JS：把 viewport meta 写成
-     * `width=device-width, initial-scale=R, minimum-scale=R, maximum-scale=R, user-scalable=no`。
-     * - width=device-width → 布局宽=屏宽，不产生横向滚动；
-     * - initial-scale=R   → 浏览器 Ctrl- 式显示缩放（R<1 缩小看更多，R>1 放大）；
-     * - min=max=R         → 锁死缩放（既不会被 clamp 回 100%，也不许用户手动捏合）；
-     * ratio 由用户 pageScale 推导，范围 0.5–1.5。
+     * 有效 CSS 像素密度（v1.2.122）。
+     *
+     * 正常情况下就是当前 display 的 density；但副屏/投屏可能把 density 报成 1
+     * （物理像素直接当 CSS 像素用，实测那块屏上 iw=1168），这时退回系统主屏密度，
+     * 否则 inset 会以 126 而不是 46 下发、布局也会按 1168 宽排成桌面。
      */
-    private fun portraitViewportJs(ratio: Float): String {
-        val r = ratio.coerceIn(0.5f, 1.5f)
-        return "(function(){" +
-            "var m=document.querySelector('meta[name=\"viewport\"]');" +
-            "if(!m){m=document.createElement('meta');m.setAttribute('name','viewport');" +
-            "(document.head||document.documentElement).appendChild(m);}" +
-            "m.setAttribute('content','width=device-width, initial-scale=$r, minimum-scale=$r, maximum-scale=$r, user-scalable=no');" +
-            "})()"
+    private fun effectiveDensity(): Float {
+        val cur = (if (::webView.isInitialized) webView.resources else resources)
+            .displayMetrics.density
+        val sys = android.content.res.Resources.getSystem().displayMetrics.density
+        return when {
+            cur <= 0f -> sys.takeIf { it > 0f } ?: 1f
+            sys > cur * 1.05f -> sys
+            else -> cur
+        }
+    }
+
+    /**
+     * 页面缩放（v1.2.122 定稿口径）。
+     *
+     * - **屏幕适配交给系统**：默认（100%）完全不调用 setInitialScale，
+     *   WebView 按设备密度自行排版，布局宽 = 物理宽 / density；
+     * - **用户缩放才下发**：只有用户主动选了非 100% 的档位才调用；
+     *   调回 100% 用 0 复位。手动缩放会按百分比改布局宽，可能影响排版，
+     *   所以设置页把它标成「100% 为推荐值」。
+     */
+    private fun applyPageScale() {
+        if (!::webView.isInitialized) return
+        // v1.2.122：默认（100%）**不要**调用 setInitialScale ——
+        // useWideViewPort=false 时它会关闭 WebView 的密度换算，
+        // 「1 布局像素 = 1 物理像素」，视口宽变成 1168，ds-bot 于是按桌面布局渲染。
+        // 只有用户主动改过缩放才下发；回到默认时用 0 复位（0 = 交给 WebView 自己决定）。
+        val applied = pageScale != DEFAULT_PAGE_SCALE
+        if (applied) runCatching { webView.setInitialScale(pageScale) }
+        else runCatching { webView.setInitialScale(0) }
+        // 每页加载打一行（v1.2.122 定位「iw=1168」用）：四个密度/缩放/尺寸数分开打，
+        // 三者不一致就能直接锁定是「WebView 自己的密度」还是「缩放没落地」。
+        logWebView(
+            "scale: pageScale=${pageScale}% initialScale=${if (applied) "${pageScale}" else "default"}" +
+                " textZoom=${webView.settings.textZoom}" +
+                " wvDensity=${webView.resources.displayMetrics.density}" +
+                " wvCtxDensity=${webView.context.resources.displayMetrics.density}" +
+                " sysDensity=${android.content.res.Resources.getSystem().displayMetrics.density}" +
+                " getScale=${webView.scale}" +
+                " wvSize=${webView.width}x${webView.height}"
+        )
     }
 
     /** 解压进度：null=不在解压（不确定转圈），有值=真实百分比确定性进度 */
     private fun renderProgress(frac: Float?) {
+        // 启动页也要吃真实进度（Installing → 「正在安装运行时 NN%」）
+        lastProgress = frac
+        updateSplash(lastState)
+        if (!mainReady) return
         val bar = findViewById<ProgressBar>(R.id.installProgress)
         if (frac == null) {
             bar.isIndeterminate = true
@@ -514,7 +743,235 @@ class MainActivity : Activity() {
         statusBar.postDelayed(r, 1000)
     }
 
+    // ==================== 状态栏 / 安全区（v1.2.122） ====================
+
+    /**
+     * 三档状态栏：
+     *  - TRANSPARENT：edge-to-edge + 状态栏全透明，网页透出；
+     *  - THEME：edge-to-edge + 状态栏填主题底色（ds_bg_base）；
+     *  - SYSTEM：保持系统默认布局（不延伸），状态栏用主题色。
+     * 透明与主题色都把状态栏/导航栏高度以 CSS 变量交给页面，壳不再替页面留栏。
+     */
+    private fun applyStatusBar() {
+        statusBarMode = StatusBarPrefs.get(this)
+        val edge = statusBarMode != StatusBarMode.SYSTEM
+        // 浅色主题用深色图标，深色主题用浅色图标
+        val lightIcons = !ThemeHelper.isDark(this)
+        val barColor = if (statusBarMode == StatusBarMode.TRANSPARENT)
+            android.graphics.Color.TRANSPARENT else getColor(R.color.ds_bg_base)
+        val navColor = if (edge) android.graphics.Color.TRANSPARENT else barColor
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(!edge)
+            window.statusBarColor = barColor
+            window.navigationBarColor = navColor
+            window.insetsController?.let { c ->
+                val mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                c.setSystemBarsAppearance(if (lightIcons) mask else 0, mask)
+            }
+        } else {
+            var vis = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            if (edge) {
+                vis = vis or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            }
+            if (lightIcons) vis = vis or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            if (lightIcons) vis = vis or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            window.decorView.systemUiVisibility = vis
+            window.statusBarColor = barColor
+            window.navigationBarColor = navColor
+        }
+        // 布局模式变了 → 重新取一次 inset 并推给页面
+        findViewById<View>(android.R.id.content)?.requestApplyInsets()
+        injectSafeInsets()
+    }
+
+    /** 监听系统栏 inset 变化（旋转/手势条切换/分屏都会变） */
+    private fun installInsetsListener() {
+        val root = findViewById<View>(android.R.id.content) ?: return
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            val top: Int
+            val bottom: Int
+            var ime = 0
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars())
+                top = bars.top
+                bottom = bars.bottom
+                // v1.2.122：全屏（decorFitsSystemWindows=false）下窗口不会因键盘 resize，
+                // 只能把 IME 高度交给页面，让输入框自己抬起来。
+                ime = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
+            } else {
+                @Suppress("DEPRECATION")
+                top = insets.systemWindowInsetTop
+                @Suppress("DEPRECATION")
+                bottom = insets.systemWindowInsetBottom
+            }
+            if (top != insetTopPx || bottom != insetBottomPx || ime != insetImePx) {
+                insetTopPx = top
+                insetBottomPx = bottom
+                insetImePx = ime
+                applyShellInsets()
+                injectSafeInsets()
+            }
+            insets
+        }
+    }
+
+    /**
+     * 把安全区写成 CSS 变量（px）并注入样式。约定（README「壳侧注入」一节）：
+     *   --dsh-mobile-top-inset / --dsh-mobile-bottom-inset  ← ds-bot 既有契约名
+     *   --dsh-android-system-bottom                          ← ds-bot 底栏间隙读的名字
+     *   --dsh-safe-top / --dsh-safe-bottom                   ← 通用名
+     *   --dsh-sab                                            ← v1.2.122 起保留的别名
+     * 「跟随系统」模式下窗口不延伸，值一律注入 0，页面无需额外留白。
+     *
+     * 注入内容不再写死在代码里，来自 `$DSH_HOME/deepbot/inject.json`（见 [InjectSpec]），
+     * 改文件后重启 App 即可生效，不用重装 APK。设置里的「底部安全区适配」关掉时
+     * 只保留变量、不写样式，方便一键回到裸布局对比。
+     */
+    private fun injectSafeInsets() {
+        if (!::webView.isInitialized) return
+        // inset 是物理 px（状态栏实测 126px），页面按 CSS px 消费它 ——
+        // 必须除以屏幕密度再下发，否则页面按 126 CSS px 留白，等于多出约 2.75 倍（v1.2.122 实测顶部空出一大截）。
+        val density = effectiveDensity()
+        val top = if (statusBarMode == StatusBarMode.SYSTEM) 0 else Math.round(insetTopPx / density)
+        val bottom = if (statusBarMode == StatusBarMode.SYSTEM) 0 else Math.round(insetBottomPx / density)
+        val ime = if (statusBarMode == StatusBarMode.SYSTEM) 0 else Math.round(insetImePx / density)
+        val fix = InsetFixPrefs.isEnabled(this)
+        val spec = InjectSpec.load(this)
+        // 注入来源留痕（v1.2.122）：共享文件没读到时会静默退回私有/内置，
+        // 打一行就能回答「我改了共享文件为什么不生效」。
+        if (spec.source != lastInjectSource) {
+            lastInjectSource = spec.source
+            logWebView("inject source=${spec.source} css=${spec.css.size} js=${spec.js.size} probe=${spec.probe}")
+        }
+        val css = if (fix) spec.css.joinToString("\n") else ""
+        val extra = if (fix) spec.js.joinToString("\n") else ""
+        // 布局测量日志（DSHPROBE2: 前缀，tag DshWebView）：由 inject.json 的 probe 开关控制（缺省开）
+        val probe = if (fix && spec.probe) PROBE_JS else ""
+        val patch = if (css.isEmpty()) {
+            ""
+        } else {
+            "var s=document.createElement('style');s.id=id;" +
+                "s.textContent=${JSONObject.quote(css)};(document.head||d).appendChild(s);"
+        }
+        val js = "(function(){var d=document.documentElement;if(!d)return;" +
+            "d.style.setProperty('--dsh-mobile-top-inset','${top}px');" +
+            "d.style.setProperty('--dsh-mobile-bottom-inset','${bottom}px');" +
+            "d.style.setProperty('--dsh-android-system-top','${top}px');" +
+            "d.style.setProperty('--dsh-android-system-bottom','${bottom}px');" +
+            "d.style.setProperty('--dsh-android-ime-bottom','${ime}px');" +
+            "d.style.setProperty('--dsh-sab','${bottom}px');" +
+            "d.style.setProperty('--dsh-safe-top','${top}px');" +
+            "d.style.setProperty('--dsh-safe-bottom','${bottom}px');" +
+            "var id='dsh-inset-fix';var old=document.getElementById(id);" +
+            "if(old)old.remove();" +
+            patch + extra + probe + "})();"
+        runCatching { webView.evaluateJavascript(js, null) }
+        // 品牌名：ds-bot 自己的产品名是「DS Bot」，源码不动，由壳把文案换成 DeepBot（v1.2.122）。
+        // 只改**整块文本恰好等于** "DS Bot" 的叶子节点，不碰句子里的同名子串。
+        runCatching { webView.evaluateJavascript(BRAND_JS, null) }
+    }
+
+    // ==================== 启动页（v1.2.121） ====================
+
+    /** 绑定启动页的重试按钮，并起一个 250ms 的计时器刷新「已等 Ns」文案 */
+    private fun setupSplash() {
+        findViewById<TextView>(R.id.splashRetry)?.setOnClickListener {
+            // 真实重试：走监督器的 stop→start（不是假动画）
+            splashDismissed = false
+            pageReady = false
+            findViewById<View>(R.id.splashErrorGroup).visibility = View.GONE
+            findViewById<View>(R.id.splashSpinner).visibility = View.VISIBLE
+            findViewById<View>(R.id.splashStatus).visibility = View.VISIBLE
+            urlLoaded = false
+            (application as DshApp).supervisor.restart()
+        }
+        uiScope.launch {
+            while (!splashDismissed) {
+                updateSplash(lastState)
+                kotlinx.coroutines.delay(250)
+            }
+        }
+    }
+
+    /**
+     * 按真实引擎状态刷新启动页文案（不造假进度）：
+     *   Installing → 正在安装运行时 NN%（installProgress 的真实值）
+     *   Starting/Backoff → 正在启动本地引擎… Ns（真实等待秒数）
+     *   Failed → 错误原因 + 重试按钮
+     */
+    private fun updateSplash(state: EngineSupervisor.State?) {
+        if (splashDismissed) return
+        val status = findViewById<TextView>(R.id.splashStatus) ?: return
+        val spinner = findViewById<View>(R.id.splashSpinner) ?: return
+        val errorGroup = findViewById<View>(R.id.splashErrorGroup) ?: return
+        val errorText = findViewById<TextView>(R.id.splashError) ?: return
+        val elapsedS = ((SystemClock.uptimeMillis() - splashAtMs) / 1000).coerceAtLeast(0)
+        when (state) {
+            is EngineSupervisor.State.Failed -> {
+                spinner.visibility = View.GONE
+                status.visibility = View.GONE
+                errorGroup.visibility = View.VISIBLE
+                errorText.text = getString(R.string.splash_failed_reason, state.reason)
+            }
+            is EngineSupervisor.State.Installing -> {
+                spinner.visibility = View.VISIBLE
+                status.visibility = View.VISIBLE
+                errorGroup.visibility = View.GONE
+                status.text = lastProgress?.let {
+                    getString(R.string.splash_installing_runtime, (it * 100).toInt())
+                } ?: getString(R.string.splash_preparing)
+            }
+            is EngineSupervisor.State.Healthy -> {
+                spinner.visibility = View.VISIBLE
+                status.visibility = View.VISIBLE
+                errorGroup.visibility = View.GONE
+                status.text = getString(R.string.splash_ready)
+            }
+            is EngineSupervisor.State.Backoff -> {
+                spinner.visibility = View.VISIBLE
+                status.visibility = View.VISIBLE
+                errorGroup.visibility = View.GONE
+                status.text = getString(R.string.splash_backoff, state.attempt)
+            }
+            is EngineSupervisor.State.Stopped -> {
+                spinner.visibility = View.GONE
+                status.visibility = View.VISIBLE
+                errorGroup.visibility = View.GONE
+                status.text = getString(R.string.status_idle)
+            }
+            else -> {
+                spinner.visibility = View.VISIBLE
+                status.visibility = View.VISIBLE
+                errorGroup.visibility = View.GONE
+                status.text = getString(R.string.splash_starting_engine, elapsedS)
+            }
+        }
+    }
+
+    /** 引擎就绪 + 网页首屏加载完 → 启动页淡出（280ms），交给 WebView */
+    private fun maybeDismissSplash() {
+        if (splashDismissed) return
+        if (lastState !is EngineSupervisor.State.Healthy || !pageReady) return
+        splashDismissed = true
+        val splash = findViewById<View>(R.id.splashRoot) ?: return
+        splash.animate().alpha(0f).setDuration(280).withEndAction {
+            splash.visibility = View.GONE
+            Log.i("Splash", "dismissed +${SystemClock.uptimeMillis() - splashProcessStartMs}ms")
+        }.start()
+    }
+
     private fun render(state: EngineSupervisor.State) {
+        // 启动页先吃状态（主内容还没填时也能看到真实阶段）
+        lastState = state
+        if (state is EngineSupervisor.State.Healthy && !readyLogged) {
+            readyLogged = true
+            Log.i("Splash", "engine ready +${SystemClock.uptimeMillis() - splashProcessStartMs}ms")
+        }
+        updateSplash(state)
+        if (state is EngineSupervisor.State.Healthy) maybeDismissSplash()
+        if (!mainReady) return
         // 显式退出（Stopped）后按钮文案变「启动」，提示用户点这里重新拉起引擎
         findViewById<TextView>(R.id.btnRestart).text =
             if (state is EngineSupervisor.State.Stopped) getString(R.string.btn_start_engine)
@@ -550,6 +1007,32 @@ class MainActivity : Activity() {
                 getString(R.string.status_idle)
             }
         }
+        applyAutoHide(state)
+    }
+
+    /**
+     * 顶部工具栏自动隐藏（v1.2.121）。
+     *
+     * 规则（与设置页开关「启动后自动隐藏顶部工具栏」配合，默认开）：
+     *  - 只在「非就绪 → 就绪」这一次跃迁上排队收起，状态反复刷新不会重复收；
+     *  - 就绪后延迟 [AutoHidePrefs.HIDE_DELAY_MS] 再收，留出看清端口/版本的时间；
+     *  - 用户手动唤回过就本轮不再自动收（[userShowedToolbar]）；
+     *  - 启动中/安装运行时/退避/失败优先把横栏露出来，等下次就绪再按设置处理。
+     */
+    private fun applyAutoHide(state: EngineSupervisor.State) {
+        val ready = state is EngineSupervisor.State.Healthy
+        if (ready == lastStateReady) return
+        lastStateReady = ready
+        autoHideHandler.removeCallbacks(autoHideRunnable)
+        if (!ready) {
+            showToolbar(fromUser = false)
+            // 用户主动唤回过后，本轮不再自动收起（重启/重建后重新计）
+            if (!userShowedToolbar) autoHideArmed = true
+            return
+        }
+        if (!autoHideArmed || userShowedToolbar || !AutoHidePrefs.isEnabled(this)) return
+        autoHideArmed = false
+        autoHideHandler.postDelayed(autoHideRunnable, AutoHidePrefs.HIDE_DELAY_MS)
     }
 
     override fun onBackPressed() {
@@ -990,6 +1473,8 @@ class MainActivity : Activity() {
         // 首启跳 Onboarding 时本 Activity 立即销毁，webView 尚未初始化——
         // lateinit 直接访问会崩（Android 11 新用户首启闪退实测）。
         uiScope.cancel()
+        // 取消尚未到点的自动收起，避免 Activity 销毁后回调仍持有视图
+        autoHideHandler.removeCallbacks(autoHideRunnable)
         // 注销语音发送能力：本 Activity 已销毁，服务侧再发会拿到明确的「需打开 App」提示
         // （而不是把文字注入到一个已销毁的 WebView）
         stopHangWatchdog()
@@ -1133,6 +1618,77 @@ class MainActivity : Activity() {
     }
 
     companion object {
+
+        /**
+         * 品牌名替换（v1.2.122）：把页面里**整块文本恰好是 "DS Bot"** 的叶子节点改成 DeepBot，
+         * 以及 document.title。ds-bot 源码不动（它的 sidebar.js:822 BrandName 就是写死的 "DS Bot"）。
+         *
+         * 用 MutationObserver 兜住 React 重渲染，带 150ms 去抖，避免逐个 DOM 变动都全树扫描。
+         */
+        private val BRAND_JS = """
+(function(){
+  if(window.__deepbotBrand){return;}
+  window.__deepbotBrand=true;
+  var NAME='DeepBot';
+  function fix(){
+    var all=document.querySelectorAll('span,a,p,h1,h2,h3,div,strong,b');
+    for(var i=0;i<all.length;i++){var e=all[i];
+      if(e.childElementCount){continue;}
+      if(String(e.textContent||'').trim()==='DS Bot'){e.textContent=NAME;}
+    }
+    if(document.title==='DS Bot'){document.title=NAME;}
+  }
+  var timer=null;
+  function schedule(){if(timer){return;}timer=setTimeout(function(){timer=null;fix();},150);}
+  fix();
+  try{new MutationObserver(schedule).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
+})();
+        """.trimIndent()
+
+        /**
+         * 布局测量（v1.2.122，由 inject.json 的 probe 开关控制，缺省开）。
+         * 打一条就能看清：顶部那片空白是哪个元素、左侧占位侧栏是不是真的存在、
+         * 会话列的矩形与视口的关系。前缀 [dsh-android] 会被 console 桥转进 logcat。
+         */
+        private val PROBE_JS = """
+(function(){
+  function r(e){if(!e)return null;var b=e.getBoundingClientRect();
+    return [Math.round(b.left),Math.round(b.top),Math.round(b.right),Math.round(b.bottom)];}
+  function pick(sel,n){var out=[],es=document.querySelectorAll(sel);
+    for(var i=0;i<es.length&&out.length<n;i++){var s=getComputedStyle(es[i]);
+      if(s.display==='none'&&s.visibility==='hidden')continue;
+      out.push([String(es[i].className||'').slice(0,26),r(es[i]),s.display]);}
+    return out;}
+  function cs(e){if(!e)return null;var s=getComputedStyle(e);
+    return {pos:s.position,left:s.left,right:s.right,width:s.width,flex:s.flex,
+            disp:s.display,ml:s.marginLeft,gc:s.gridColumn};}
+  function topChild(){var cc=document.querySelector('[class*="centerCol"]');
+    if(!cc)return null;var k=cc.children;
+    for(var i=0;i<k.length;i++){var b=k[i].getBoundingClientRect();
+      if(b.height>0)return [String(k[i].className||'').slice(0,26),r(k[i]),
+        String(k[i].textContent||'').trim().slice(0,16)];}
+    return null;}
+  function probe(){
+    var d=document.documentElement,b=document.body;
+    var cs=getComputedStyle(d),bs=getComputedStyle(b);
+    var cc=document.querySelector('[class*="centerCol"]');
+    var o={dpr:window.devicePixelRatio,cw:document.documentElement.clientWidth,
+      iw:innerWidth,ih:innerHeight,
+      htmlPad:[cs.paddingTop,cs.marginTop],bodyPad:[bs.paddingTop,bs.marginTop],
+      topInset:cs.getPropertyValue('--dsh-mobile-top-inset').trim(),
+      astTop:cs.getPropertyValue('--dsh-android-system-top').trim(),
+      astBottom:cs.getPropertyValue('--dsh-android-system-bottom').trim(),
+      body:r(b),cc:r(cc),ccPadTop:cc?getComputedStyle(cc).paddingTop:null,
+      ccStyle:cs(cc),ccParent:cs(cc?cc.parentElement:null),
+      sbStyle:cs(document.querySelector('[class*="sidebarCol"]')),
+      top:topChild(),
+      rail:pick('[class*="rail"]',3),side:pick('[class*="side"]',3)};
+    console.log('DSHPROBE2:'+JSON.stringify(o));
+  }
+  setTimeout(probe,600);setTimeout(probe,2500);
+})();
+        """.trimIndent()
+
         /** WebView 文件选择器的请求码（onShowFileChooser → onActivityResult） */
         private const val REQ_FILE_CHOOSER = 1001
 
@@ -1464,29 +2020,11 @@ class MainActivity : Activity() {
         private const val PREFS_UI = "dsh_ui"
         private const val KEY_PAGE_SCALE = "page_scale"
 
-        /** 竖屏页面缩放范围/步长/默认值（等价浏览器 Ctrl- 缩小一点，用户可再调） */
-        private const val DEFAULT_PAGE_SCALE = 90
-        private const val MIN_PAGE_SCALE = 50
-        private const val MAX_PAGE_SCALE = 150
-        private const val SCALE_STEP = 5
-
-        private const val DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
         /**
-         * 桌面视口改写：width=1280 让响应式 CSS 命中桌面断点；
-         * initial-scale = 屏宽/1280 整页缩进屏内；maximum-scale=5 + user-scalable
-         * 允许双指缩放细看。执行时机 onPageFinished（此时 clientWidth=设备宽）。
+         * 页面缩放默认值（v1.2.122 收口）：100 = 不调用 setInitialScale，屏幕适配交给系统。
+         * 可选档位在设置页（SettingsActivity.PAGE_SCALE_STEPS：80/90/100/110/120）。
          */
-        private const val DESKTOP_VIEWPORT_JS =
-            "(function(){" +
-                "var W=1280;" +
-                "var m=document.querySelector('meta[name=\"viewport\"]');" +
-                "if(!m){m=document.createElement('meta');m.setAttribute('name','viewport');" +
-                "(document.head||document.documentElement).appendChild(m);}" +
-                "var cw=document.documentElement.clientWidth||412;" +
-                "m.setAttribute('content','width='+W+', initial-scale='+(cw/W).toFixed(4)+', maximum-scale=5, user-scalable=yes');" +
-                "})()"
+        private const val DEFAULT_PAGE_SCALE = 100
+
     }
 }

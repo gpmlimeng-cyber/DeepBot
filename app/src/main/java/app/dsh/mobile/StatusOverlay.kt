@@ -112,7 +112,9 @@ object StatusOverlay {
         main {
             if (root != null || hidden) return@main
             try {
-                val ctx = svc.applicationContext
+                // 主题偏好要落到悬浮窗：服务 Context 拿到的是系统 uiMode，
+                // 手动浅/深色时需要再包一层，inflate 才会取到对应的 values-night 色板。
+                val ctx = ThemeHelper.wrap(svc.applicationContext)
                 appCtx = ctx
                 val w = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 wm = w
@@ -470,7 +472,7 @@ object StatusOverlay {
                 box.addView(TextView(ctx).apply {
                     text = ctx.getString(R.string.overlay_no_last_action)
                     textSize = 11f
-                    setTextColor(0xFF9AA0A6.toInt())
+                    setTextColor(ctx.getColor(R.color.ds_text_tertiary))
                 })
                 return@main
             }
@@ -478,7 +480,7 @@ object StatusOverlay {
             box.addView(TextView(ctx).apply {
                 text = last.action
                 textSize = 11f
-                setTextColor(0xFFB8C0CC.toInt())
+                setTextColor(ctx.getColor(R.color.ds_text_secondary))
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
             })
@@ -487,7 +489,7 @@ object StatusOverlay {
                 val when_ = android.text.format.DateUtils.getRelativeTimeSpanString(last.at)
                 text = ctx.getString(R.string.overlay_last_action_at, when_)
                 textSize = 10f
-                setTextColor(0xFF7DD3FC.toInt())
+                setTextColor(ctx.getColor(R.color.ds_accent))
                 setPadding(0, dp(ctx, 3), 0, 0)
             })
         }

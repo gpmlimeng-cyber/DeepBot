@@ -3,7 +3,7 @@
      Platzhalter/Zwischenräume des Default (values/) bei. -->
 <resources>
 
-    <string name="app_name">DSH Mobile</string>
+    <string name="app_name">DeepBot</string>
     <string name="notif_channel_engine">Agenten-Engine</string>
     <string name="notif_channel_engine_desc">Status der lokalen DeepSeek-Harness-Engine</string>
     <string name="notif_title">DSH-Engine läuft</string>
@@ -41,7 +41,7 @@
     <string name="accessibility_hint">Der Bedienungshilfen-Dienst ist aus — "Bildschirmtippen" ist nicht verfügbar</string>
 
     <!-- Erster Start: Onboarding -->
-    <string name="ob_title">Willkommen bei DSH Mobile</string>
+    <string name="ob_title">Willkommen bei DeepBot</string>
     <string name="ob_subtitle">Beim ersten Start wird alles nach Ihren Wünschen eingerichtet — diese Seite erscheint danach nicht mehr.</string>
     <string name="ob_orientation_label">Standard-Bildschirmausrichtung</string>
     <string name="ob_orientation_desc">Hochformat (Handy) eignet sich zum einhändigen Stöbern; Querformat wechselt zum Desktop-Layout; Automatisch folgt der Gerätedrehung (Desktop-Layout nur bei physischem Querformat)</string>
@@ -86,7 +86,35 @@
 
     <string name="setting_applies_on_return">wirkt bei der Rückkehr</string>
     <string name="setting_scale">Seitenzoom</string>
-    <string name="setting_scale_sub">Skalierung der Webseitenanzeige anpassen (Browser-Zoom)</string>
+    <string name="setting_scale_sub">Stufe wählen: 100 % empfohlen, andere Werte können das Layout beeinflussen (die Bildschirmanpassung übernimmt das System)</string>
+    <string name="setting_auto_hide">Obere Leiste automatisch ausblenden</string>
+    <string name="setting_auto_hide_sub">Blendet die Statusleiste 2 Sekunden nach Engine-Bereitschaft aus. Zum Zurückholen auf den Griff tippen.</string>
+    <string name="setting_theme">Design</string>
+    <string name="setting_theme_sub">Farben der Hülle: hell, dunkel oder Systemeinstellung</string>
+    <string name="setting_theme_light">Hell</string>
+    <string name="setting_theme_system">Auto</string>
+    <string name="setting_theme_dark">Dunkel</string>
+
+    <!-- 启动页（v1.2.121） -->
+    <string name="splash_tagline">Lokaler KI-Arbeitsbereich</string>
+    <string name="splash_starting_engine">Lokale Engine wird gestartet… %1$ds</string>
+    <string name="splash_installing_runtime">Laufzeitumgebung wird installiert: %1$d%%</string>
+    <string name="splash_preparing">Wird vorbereitet…</string>
+    <string name="splash_ready">Bereit</string>
+    <string name="splash_backoff">Engine fehlgeschlagen, neuer Versuch (%1$d)…</string>
+    <string name="splash_failed_reason">Engine konnte nicht gestartet werden: %1$s</string>
+    <string name="splash_retry">Erneut versuchen</string>
+
+    <!-- 状态栏样式（v1.2.122） -->
+    <string name="setting_status_bar">Statusleiste</string>
+    <string name="setting_status_bar_sub">Transparent, themenfarben oder Systemstandard</string>
+    <string name="setting_status_bar_transparent">Transparent</string>
+    <string name="setting_status_bar_theme">Themenfarbe</string>
+    <string name="setting_status_bar_system">Systemstandard</string>
+    <string name="setting_applies_live">sofort wirksam</string>
+    <string name="setting_inset_fix">Sicherheitsabstand unten</string>
+    <string name="setting_inset_fix_sub">Fügt unten Abstand für die untere Leiste und die Gestenleiste hinzu (Hülle; Regeln in $DSH_HOME/deepbot/inject.json, ds-bot unverändert)</string>
+
 
     <string name="setting_priv_mode">Berechtigungsmodus</string>
     <string name="setting_priv_mode_sub">Bestimmt, wie viel Systembereich die KI erreichen kann. Beim Wechsel startet die Engine neu</string>
@@ -106,7 +134,7 @@
     <string name="setting_restart_engine">Engine neu starten</string>
     <string name="setting_restart_engine_sub">Runtime und Erweiterungen neu laden (Selbstheilung nach Absturz)</string>
     <string name="setting_about">Über</string>
-    <string name="setting_about_sub">DSH Mobile · Version %1$s</string>
+    <string name="setting_about_sub">DeepBot · Version %1$s</string>
 
     <!-- Erweiterungs-Center (v1.2.0): rot = nicht heruntergeladen, gelb = heruntergeladen aber inaktiv, grün = aktiviert -->
     <string name="settings_section_ext">Erweiterungen</string>
@@ -184,9 +212,9 @@ Sie werden erneut heruntergeladen und installiert (mit Abhängigkeits-Closures).
 
     <!-- Über -->
     <string name="about_title">Über</string>
-    <string name="about_app_name">DSH Mobile</string>
+    <string name="about_app_name">DeepBot</string>
     <string name="about_version">Version %1$s</string>
-    <string name="about_intro">DSH Mobile ist eine lokale Engine-Hülle für DeepSeek Harness (DSH) unter Android: Sie führt die vollständige Node.js-Agent-Engine in der Sandbox des Telefons aus — kein Server nötig, keine Daten verlassen das Gerät.</string>
+    <string name="about_intro">DeepBot ist eine lokale Engine-Hülle für DeepSeek Harness (DSH) unter Android: Sie führt die vollständige Node.js-Agent-Engine in der Sandbox des Telefons aus — kein Server nötig, keine Daten verlassen das Gerät.</string>
     <string name="about_based">Basiert auf dem DeepSeek-Harness-(dsh)-Agent-Framework, im August 2026 von DeepSeek Open Source gestellt</string>
     <string name="about_author">Autor: Soodok</string>
     <string name="about_open_source">Quellcode</string>
@@ -306,8 +334,8 @@ Sie können auch ohne Update fortfahren, die Oberfläche wird dann aber nicht an
     <string name="asrapp_step2_title">2. Öffnen und ein Modell herunterladen</string>
     <string name="asrapp_step2_body">Öffnen Sie sie von dieser Seite (Eintrag oben) oder über die System-Spracheingabe-Einstellungen. Gehen Sie zu "Modelle" und laden Sie eines herunter. zipformer-zh-14m-int8 ist klein und schnell — gut für den Anfang. Wählen Sie paraformer-zh-int8, wenn Sie bessere Genauigkeit wünschen und genügend Speicher haben. Modelle bleiben auf Ihrem Gerät; die Download-Quelle folgt Ihrer Systemsprache (HuggingFace offiziell für Englisch, ein in China erreichbarer Mirror für Chinesisch) und kann in den App-Einstellungen überschrieben werden.</string>
     <string name="asrapp_step3_title">3. Zum System-Erkenner machen</string>
-    <string name="asrapp_step3_body">Tippen Sie in der App auf "Als Systemstandard setzen". Dafür ist Shizuku oder Root nötig; ohne beides gehen Sie zu Einstellungen · Sprachen &amp; Eingabe · Spracheingabe und wählen die App dort. Auf ROMs, die diese Seite umleiten, können Sie sie stattdessen direkt hier in DSH Mobile auswählen (siehe Einstellung "Erkennungs-Engine").</string>
-    <string name="asrapp_step4_title">4. In DSH Mobile aktivieren</string>
+    <string name="asrapp_step3_body">Tippen Sie in der App auf "Als Systemstandard setzen". Dafür ist Shizuku oder Root nötig; ohne beides gehen Sie zu Einstellungen · Sprachen &amp; Eingabe · Spracheingabe und wählen die App dort. Auf ROMs, die diese Seite umleiten, können Sie sie stattdessen direkt hier in DeepBot auswählen (siehe Einstellung "Erkennungs-Engine").</string>
+    <string name="asrapp_step4_title">4. In DeepBot aktivieren</string>
     <string name="asrapp_step4_body">Gehen Sie zurück zu "Sprachdienste · Spracherkennung" und setzen Sie "Erkennungs-Engine" auf den DSH-Offline-Erkenner. Tippen Sie dann auf das schwebende Mikrofon: Die Erkennung läuft nun vollständig offline. Tippen Sie jederzeit auf "Prüfung ausführen" in der Erkenner-App, um alle Schritte zu verifizieren.</string>
 
     <string name="asrapp_trouble_title">Falls etwas nicht funktioniert</string>
@@ -399,4 +427,8 @@ Sie können auch ohne Update fortfahren, die Oberfläche wird dann aber nicht an
     <string name="voice_opening_session">Unterhaltung wird geöffnet …</string>
     <string name="voice_session_timeout">Unterhaltung hat sich nicht geöffnet, erneut versuchen</string>
     <string name="voice_send_failed">Senden fehlgeschlagen: %1$s</string>
+    <string name="setting_reload_inject">Injektion neu laden</string>
+    <string name="setting_reload_inject_sub">inject.json wird bei jedem Seitenaufruf neu gelesen; hier die Seite sofort neu laden (ohne App-Neustart)</string>
+    <string name="inject_reload_queued">Seite wird beim Zurückkehren neu geladen</string>
+    <string name="scale_recommended">Empfohlen</string>
 </resources>

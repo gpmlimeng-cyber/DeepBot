@@ -158,7 +158,7 @@ class EngineService : Service() {
             exitPending,
         ).build()
         return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(getString(R.string.notif_title))
             .setContentText(text)
             .setOngoing(true)

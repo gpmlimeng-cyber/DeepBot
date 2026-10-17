@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  深色主题：数值逐条对齐改造前壳里的硬编码（观感保持不变）。
+  与 values/colors.xml 同名同序，浅色/深色通过 uiMode 切换。
+-->
+<resources>
+    <color name="ds_bg_base">#FF101418</color>
+    <color name="ds_surface">#FF1C232C</color>
+    <color name="ds_surface_alt">#FF1B222C</color>
+    <color name="ds_surface_sunken">#FF1D232B</color>
+
+    <color name="ds_text_primary">#FFFFFFFF</color>
+    <color name="ds_text_strong">#FFE8EAED</color>
+    <color name="ds_text_secondary">#FF8A94A3</color>
+    <color name="ds_text_tertiary">#FF9CA3AF</color>
+    <color name="ds_text_hint">#66FFFFFF</color>
+    <color name="ds_icon">#FFFFFFFF</color>
+
+    <color name="ds_divider">#22FFFFFF</color>
+    <color name="ds_divider_soft">#14FFFFFF</color>
+    <color name="ds_border_strong">#33FFFFFF</color>
+    <color name="ds_border_chip">#FF2A3441</color>
+    <color name="ds_border_menu">#FF313B49</color>
+    <color name="ds_border_demo">#FF3D5568</color>
+    <color name="ds_demo_bg">#FF1B2733</color>
+    <color name="ds_ripple">#33FFFFFF</color>
+    <color name="ds_overlay_panel_bg">#F21C232C</color>
+    <color name="ds_handle_dash">#99FFFFFF</color>
+    <color name="ds_status_bar_bg">#B31A2028</color>
+    <color name="ds_warn_text">#FFF2B36B</color>
+    <color name="ds_on_accent">#FF101418</color>
+
+    <color name="ds_accent">#FF7DD3FC</color>
+    <color name="ds_success">#FF6EE7B7</color>
+    <color name="ds_warn">#FFFFB74D</color>
+    <color name="ds_error">#FFFF8A80</color>
+    <color name="ds_success_alt">#FF4ADE80</color>
+    <color name="ds_error_alt">#FFF28B82</color>
+    <color name="ds_error_soft">#FFF87171</color>
+
+    <color name="ds_overlay_ball_bg">#A6161C24</color>
+    <color name="ds_ticker_bg">#E6161C24</color>
+    <color name="ds_voice_panel_bg">#FA161C24</color>
+    <color name="ds_voice_input_bg">#FF232B35</color>
+    <color name="ds_handle_bg">#8C1A2028</color>
+    <color name="ds_scrim">#99000000</color>
+
+    <color name="ds_toast_bg">#FF2A3441</color>
+    <color name="ds_toast_text">#FFFFFFFF</color>
+</resources>

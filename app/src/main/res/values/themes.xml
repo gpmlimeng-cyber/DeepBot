@@ -1,31 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      壳的主题定义（v1.2.121 起支持浅色/深色两套）。
+      所有颜色都走 @color/ds_*，由 values-night/colors.xml 提供深色档；
+      Activity 在 attachBaseContext 里按用户偏好覆盖 uiMode（ThemeHelper），
+      因此「跟随系统 / 浅色 / 深色」三档都能落到同一套资源上。
+    -->
     <style name="Theme.Dsh" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#FF101418</item>
-        <item name="android:navigationBarColor">#FF101418</item>
-        <item name="android:windowBackground">#FF101418</item>
-        <!-- v1.2.45：全部 AlertDialog 统一深色圆角皮肤。此前只有少数弹窗手动
-             setBackgroundDrawableResource(bg_dialog_rounded)，其余仍是框架默认
-             （部分 ROM 上是方形浅色"老安卓"样式，用户实测反馈）。 -->
+        <item name="android:statusBarColor">@color/ds_bg_base</item>
+        <item name="android:navigationBarColor">@color/ds_bg_base</item>
+        <item name="android:windowBackground">@color/ds_bg_base</item>
+        <!-- 浅色档状态栏用深色图标；深色档在 values-night/themes.xml 里覆盖为 false -->
+        <item name="android:windowLightStatusBar">true</item>
+        <!-- v1.2.45：全部 AlertDialog 统一圆角皮肤，颜色随主题走 -->
         <item name="android:alertDialogTheme">@style/Theme.Dsh.Dialog</item>
     </style>
 
-    <!-- v1.2.79：Spinner 下拉弹框此前是框架默认（白底方形"老安卓"样式，用户实测反馈）。
-         这里定义暗色皮肤：弹框背景用项目统一的深色圆角卡片，条目文字用亮色。 -->
+    <!-- v1.2.79：Spinner 下拉弹框不再是框架默认白底；背景/文字都随主题 -->
     <style name="Theme.Dsh.Spinner" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:popupBackground">@drawable/bg_menu_card</item>
-        <item name="android:textColorPrimary">#FFE8ECF2</item>
-        <item name="android:textColorSecondary">#FF9AA5B4</item>
-        <item name="android:colorAccent">#FF7DD3FC</item>
-        <!-- 下拉条目：暗色文字 + 深色背景 -->
-        <item name="android:textColor">#FFE8ECF2</item>
+        <item name="android:textColorPrimary">@color/ds_text_strong</item>
+        <item name="android:textColorSecondary">@color/ds_text_tertiary</item>
+        <item name="android:colorAccent">@color/ds_accent</item>
+        <item name="android:textColor">@color/ds_text_primary</item>
     </style>
 
     <style name="Theme.Dsh.Dialog" parent="android:Theme.Material.Dialog.Alert">
-        <!-- 与手动设过背景的弹窗同款：深色 #1D232B + 22dp 圆角 -->
         <item name="android:windowBackground">@drawable/bg_dialog_rounded</item>
-        <item name="android:colorAccent">#FF7DD3FC</item>
-        <item name="android:textColorPrimary">#FFE8ECF2</item>
-        <item name="android:textColorSecondary">#FF9AA5B4</item>
+        <item name="android:colorAccent">@color/ds_accent</item>
+        <item name="android:textColorPrimary">@color/ds_text_strong</item>
+        <item name="android:textColorSecondary">@color/ds_text_tertiary</item>
     </style>
 </resources>

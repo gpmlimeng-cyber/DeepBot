@@ -13,7 +13,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "app.dsh.mobile"
+        applicationId = "com.deepbot.app"
         minSdk = 26
         // 关键决策：targetSdk 28 —— sideload 分发，豁免 Android 10+ 的 W^X 限制，
         // 允许从 filesDir 直接 execve bionic 二进制（Termux 同款策略）。
@@ -24,26 +24,34 @@ android {
         ndk {
             abiFilters += listOf(targetAbi)
         }
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c11"
-                arguments += "-DANDROID_STL=none"
-            }
-        }
+        // 原生层改为「termux clang 预编译 → jniLibs」：本机既没有 NDK，也没有
+        // Android SDK 的 cmake，原 externalNativeBuild 指定的 cmake 3.22.1 无法满足。
+        // dsh_pty.c 仅依赖 liblog、无 STL（即 -DANDROID_STL=none 的意图），
+        // 预编译产物与原 CMake 定义等价：
+        //   clang -target aarch64-linux-android24 -shared -fPIC -O2 \
+        //     -Wl,-z,max-page-size=16384 -Wl,-soname,libdshpty.so \
+        //     -o app/src/main/jniLibs/arm64-v8a/libdshpty.so \
+        //     app/src/main/cpp/dsh_pty.c -L/system/lib64 -llog
+        // 16KB 页对齐（CMakeLists 里的同一条决策，保留）：Android 15+ 部分 aarch64
+        // 真机内核使用 16384 字节页，LOAD p_align=4096 的 so 在其上 dlopen 会报
+        // "program alignment" 失败；产物已用 readelf -l 确认 p_align=0x4000。
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
+    // externalNativeBuild/cmake 已移除（本机无 NDK 与 SDK cmake）。
+    // libdshpty.so 由 termux clang 预编译到 app/src/main/jniLibs/<abi>/，
+    // 源文件仍保留在 app/src/main/cpp/dsh_pty.c。
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+    }
+
+    androidResources {
+        // assets/runtime.zip 本身已是压缩包（132,615,068 B）。再让 aapt2 压一遍只会白耗
+        // CPU/内存且几乎无收益，还会让 APK 内的文件字节与官方包不一致（无法直接比 sha256）。
+        noCompress += "zip"
     }
 
     compileOptions {

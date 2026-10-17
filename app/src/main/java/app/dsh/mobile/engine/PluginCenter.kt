@@ -173,7 +173,7 @@ object PluginCenter {
             try {
                 val node = EngineConfig.nodeBin(ctx)
                 val entry = EngineConfig.dshEntry(ctx)
-                val env = EngineConfig.buildEnv(ctx, EngineConfig.DEFAULT_PORT)
+                val env = EngineConfig.buildEnv(ctx, EngineConfig.resolvePort())
                 val pb = ProcessBuilder(
                     node.absolutePath, "--expose-internals", entry.absolutePath,
                     "plugin", "--profile", "web", "add", pkg,

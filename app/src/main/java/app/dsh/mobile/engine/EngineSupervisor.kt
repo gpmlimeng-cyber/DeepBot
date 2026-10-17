@@ -3,6 +3,7 @@ package app.dsh.mobile.engine
 import app.dsh.mobile.R
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +58,7 @@ class EngineSupervisor(private val ctx: Context) {
     val healthyPort: Int get() = when (val s = _state.value) {
         is State.Healthy -> s.port
         is State.SafeMode -> s.port
-        else -> EngineConfig.DEFAULT_PORT
+        else -> EngineConfig.activePort
     }
 
     /** 从 engine.log 提取**本次启动**的 `dsh web:` 输出（带 token 完整 URL）。
@@ -86,7 +87,7 @@ class EngineSupervisor(private val ctx: Context) {
     fun webUrl(): String = when (val s = _state.value) {
         is State.Healthy -> s.tokenUrl ?: "http://127.0.0.1:${s.port}/"
         is State.SafeMode -> s.tokenUrl ?: "http://127.0.0.1:${s.port}/"
-        else -> "http://127.0.0.1:${EngineConfig.DEFAULT_PORT}/"
+        else -> "http://127.0.0.1:${EngineConfig.activePort}/"
     }
 
     private var process: EngineProcess? = null
@@ -252,12 +253,20 @@ class EngineSupervisor(private val ctx: Context) {
                 withContext(Dispatchers.IO) { EngineConfig.ensureUserDataExternal(ctx) }
                 step("user-data")
 
+                // DeepBot 出厂预装（v1.2.122）：把随包的 ds-bot 落到本 App 的 web profile
+                // 并默认启用；幂等（版本戳），失败只记日志、不阻断启动。
+                withContext(Dispatchers.IO) { DeepBotSeed.ensure(ctx) }
+                step("deepbot-seed")
+
                 _state.value = State.Starting
+                // 端口可能已被别的壳/旧实例占据（EADDRINUSE → 重启死循环）：启动前先选一个可绑定端口。
+                // resolvePort() 幂等，结果写入 EngineConfig.activePort，供下文健康探测/WebView/Shizuku 桥共用。
+                EngineConfig.resolvePort()
                 val proc = withContext(Dispatchers.IO) { spawnEngine() }
                 process = proc
                 step("spawn")
 
-                val healthy = pollHealth(EngineConfig.DEFAULT_PORT, proc)
+                val healthy = pollHealth(EngineConfig.activePort, proc)
                 step("health-poll")
                 if (healthy) {
                     withContext(Dispatchers.IO) {
@@ -272,13 +281,13 @@ class EngineSupervisor(private val ctx: Context) {
                     val t1 = System.currentTimeMillis()
                     val restartMs = restartStartedAt?.let { " (total restart took ${t1 - it}ms)" } ?: ""
                     restartStartedAt = null
-                    Log.i(TAG, (if (safe) "engine healthy in SAFE MODE on :${EngineConfig.DEFAULT_PORT}" else "engine healthy on :${EngineConfig.DEFAULT_PORT}") + restartMs)
+                    Log.i(TAG, (if (safe) "engine healthy in SAFE MODE on :${EngineConfig.activePort}" else "engine healthy on :${EngineConfig.activePort}") + restartMs)
                     _state.value =
-                        if (safe) State.SafeMode(EngineConfig.DEFAULT_PORT, tokenUrl)
-                        else State.Healthy(EngineConfig.DEFAULT_PORT, tokenUrl)
+                        if (safe) State.SafeMode(EngineConfig.activePort, tokenUrl)
+                        else State.Healthy(EngineConfig.activePort, tokenUrl)
                     // Shizuku 模式：引擎就绪后启动 ADB 级访问桥（shz 包装器回呼用）；其他模式自动关停
                     withContext(Dispatchers.IO) {
-                        ShizukuHttpBridge.start(ctx, EngineConfig.DEFAULT_PORT)
+                        ShizukuHttpBridge.start(ctx, EngineConfig.activePort)
                     }
                     // 阻塞等待进程退出（被杀/崩溃）。Healthy 后退出视为资源类偶发，
                     // 不计入 guardian（那是普通退避该管的事，与配置无关）。
@@ -386,23 +395,55 @@ class EngineSupervisor(private val ctx: Context) {
             nodeBin = EngineConfig.nodeBin(ctx),
             entryJs = EngineConfig.dshEntry(ctx),
             cwd = EngineConfig.workspaces(ctx),
-            env = EngineConfig.buildEnv(ctx, EngineConfig.DEFAULT_PORT),
+            env = EngineConfig.buildEnv(ctx, EngineConfig.activePort),
             logFile = logFile(),
             suPath = suPath,
             patchPath = runCatching { EngineConfig.ensureAndroidOverlay(ctx).absolutePath }.getOrNull(),
         )
     }
 
-    /** 端口被占则清理孤儿引擎 node（同 uid pkill，su 兜底），等内核释放端口后返回。 */
+    /** 端口被占则清理孤儿引擎 node（同 uid pkill，su 兜底），轮询到端口释放后返回。 */
     private fun cleanupOrphanEngine() {
-        val inUse = runCatching {
-            java.net.Socket().use { s ->
-                s.connect(java.net.InetSocketAddress("127.0.0.1", EngineConfig.DEFAULT_PORT), 300)
-                true
+        if (!isPortBusy(EngineConfig.activePort, 300)) return
+        Log.w(TAG, "port ${EngineConfig.activePort} occupied before start — killing orphan engine node(s)")
+        killOrphanNodes()
+        killOrphanNodesByUid()
+        // v1.2.121：轮询到端口真的空出来（最多 5s）。旧实现只等 1.5s，
+        // 残留进程还没退干净就 spawn，新实例第一次健康检查遂失败（实测 6 次冷启动
+        // 有 3 次卡满 45s 超时）。1 秒后仍占用 → 按 uid 补杀一次（只匹配带 bin/node 的）。
+        val deadline = System.currentTimeMillis() + 5_000
+        var secondKill = false
+        while (System.currentTimeMillis() < deadline) {
+            if (!isPortBusy(EngineConfig.activePort, 200)) return
+            if (!secondKill && System.currentTimeMillis() >= deadline - 4_000) {
+                secondKill = true
+                Log.w(TAG, "port ${EngineConfig.activePort} still busy — second kill by uid")
+                killOrphanNodesByUid()
             }
-        }.getOrDefault(false)
-        if (!inUse) return
-        Log.w(TAG, "port ${EngineConfig.DEFAULT_PORT} occupied before start — killing orphan engine node(s)")
+            Thread.sleep(100)
+        }
+        // v1.2.122：清不掉就别在同一个端口上硬 spawn —— 那必然是 EADDRINUSE，
+        // 引擎秒退、进退避重试，用户看到的就是「启动页挂很久」。换一个能绑的端口。
+        val stuck = EngineConfig.activePort
+        EngineConfig.resetPort()
+        val next = EngineConfig.resolvePort()
+        if (next == stuck) {
+            Log.w(TAG, "port $stuck still busy after 5s and no other port is free — spawning anyway")
+        } else {
+            Log.w(TAG, "port $stuck still busy after 5s — switched to $next")
+        }
+    }
+
+    /** 端口是否有人监听（connect 成功 = 占用） */
+    private fun isPortBusy(port: Int, timeoutMs: Int): Boolean = runCatching {
+        java.net.Socket().use { s ->
+            s.connect(java.net.InetSocketAddress("127.0.0.1", port), timeoutMs)
+            true
+        }
+    }.getOrDefault(false)
+
+    /** 杀掉本应用的孤儿引擎 node（同 uid 用 pkill，su 兜底） */
+    private fun killOrphanNodes() {
         runCatching {
             ProcessBuilder("/system/bin/sh", "-c",
                 "pkill -9 -f 'files/engine/bin/node' 2>/dev/null; true")
@@ -410,16 +451,19 @@ class EngineSupervisor(private val ctx: Context) {
         }
         // v1.2.108：走 runSu（同上，toybox 设备上旧写法静默失败）
         Privilege.runSu("pkill -9 -f 'files/engine/bin/node' 2>/dev/null; true")
-        // 轮询等端口释放（旧实现平睡 1.5s，每次重启白等；通常几十毫秒内就释放）
-        val waitUntil = System.currentTimeMillis() + 1_500
-        while (System.currentTimeMillis() < waitUntil) {
-            val free = runCatching {
-                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", EngineConfig.DEFAULT_PORT), 200) }
-                false
-            }.getOrDefault(true)
-            if (free) break
-            Thread.sleep(100)
+    }
+
+    /**
+     * 按 uid 补杀一次：只匹配命令行里带 `bin/node` 的进程（引擎与扩展的 node），
+     * 不碰用户/AI 自己起的裸 `node xxx.js`（命令行里没有 bin/node）。
+     * toybox pkill 支持 -U（实测 /system/bin/pkill --help）。
+     */
+    private fun killOrphanNodesByUid() {
+        val cmd = "pkill -9 -U \$(id -u) -f 'bin/node' 2>/dev/null; true"
+        runCatching {
+            ProcessBuilder("/system/bin/sh", "-c", cmd).start().waitFor()
         }
+        Privilege.runSu(cmd)
     }
 
     /** 稳定窗：windowMs 内进程退出返回 false（启动失败），挺过窗口返回 true */
@@ -434,27 +478,84 @@ class EngineSupervisor(private val ctx: Context) {
 
     /** 轮询 http://127.0.0.1:port 直到响应/超时/子进程提前死亡 */
     private suspend fun pollHealth(port: Int, proc: EngineProcess): Boolean = withContext(Dispatchers.IO) {
-        val deadline = System.currentTimeMillis() + EngineConfig.HEALTH_TIMEOUT_MS
+        // v1.2.122：改用单调时钟。之前用 System.currentTimeMillis()，用户时钟/时区调整
+        // 或对齐校正都可能让 deadline 提前/滞后，日志里出现过 92s 的健康轮询（远超 12s 上限）。
+        val started = SystemClock.elapsedRealtime()
+        val deadline = started + EngineConfig.HEALTH_TIMEOUT_MS
+        var attempts = 0
+        var pausedMs = 0L
         val url = "http://127.0.0.1:$port/"
-        while (System.currentTimeMillis() < deadline &&
+        var last = SystemClock.elapsedRealtime()
+        // 兜底上限：后台不推进窗口，但也不能无限等（5 分钟后一律判定失败去自愈）
+        val hardDeadline = started + 5 * 60_000L
+        while (SystemClock.elapsedRealtime() < deadline + pausedMs &&
+            SystemClock.elapsedRealtime() < hardDeadline &&
             kotlinx.coroutines.currentCoroutineContext().isActive
         ) {
+            // 后台冻结不计入窗口：App 切走时系统会挂起进程，回来时窗口若已过期，
+            // 会把一个可能已就绪的引擎杀掉（实测过一次 92254ms 的 health-poll）。
+            val now = SystemClock.elapsedRealtime()
+            if (!app.dsh.mobile.AppVisibility.foreground) pausedMs += (now - last)
+            last = now
+            attempts++
             // 子进程已死就别干等超时——立即返回走快速退避重试
             if (proc.exitFuture.isDone) return@withContext false
-            try {
-                val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 2_000
-                conn.readTimeout = 2_000
-                val code = conn.responseCode
-                conn.disconnect()
-                if (code in 200..499) return@withContext true // Web UI 起来即算就绪
-            } catch (_: Exception) {
-                // 引擎尚未监听，继续等
-            }
+            if (probeOnce(port)) return@withContext true
             delay(EngineConfig.HEALTH_INTERVAL_MS)
+        }
+        // 超时判定前再探一次端口：慢启动的引擎可能在最后一个窗口边缘刚好起来
+        if (!proc.exitFuture.isDone && probeOnce(port)) return@withContext true
+        // 超时留痕 + 现场取证（v1.2.122）：端口、进程存活、各候选端口是否应答、引擎 stdout 尾巴。
+        // 只有这几样一起打，才能分清「引擎没起来」/「起在别的端口」/「端口被残留占着」。
+        val elapsed = SystemClock.elapsedRealtime() - started
+        Log.w(TAG, "health poll timeout on :$port after $attempts attempt(s), " +
+            "${elapsed}ms elapsed, ${pausedMs}ms backgrounded, procAlive=${!proc.exitFuture.isDone}")
+        val alive = scanPorts(port)
+        if (alive.isNotEmpty()) {
+            Log.w(TAG, "health: engine answers on ${alive.joinToString(",")} (expected :$port)")
+        }
+        dumpEngineLogTail(8)
+        // 引擎起在别的端口上（换端口逻辑生效、或上一轮残留换过端口）：直接认它，别杀
+        val other = alive.firstOrNull { it != port }
+        if (other != null) {
+            EngineConfig.adoptPort(other)
+            Log.w(TAG, "health: adopting :$other (expected :$port)")
+            return@withContext true
         }
         false
     }
+
+    /** 扫一遍候选端口，返回当前能应答的那些（v1.2.122 定位「起在别处」） */
+    private fun scanPorts(expected: Int): List<Int> {
+        val out = ArrayList<Int>()
+        for (p in expected..(expected + EngineConfig.PORT_SCAN_WINDOW)) {
+            if (probeOnce(p)) out.add(p)
+        }
+        return out
+    }
+
+    /** 把引擎 stdout 日志的最后 n 行写进 logcat（超时现场的唯一直接证据） */
+    private fun dumpEngineLogTail(n: Int) {
+        runCatching {
+            val f = logFile()
+            if (!f.isFile) return
+            val lines = f.readLines()
+            val tail = lines.takeLast(n)
+            tail.forEachIndexed { i, line ->
+                Log.w(TAG, "engine[${lines.size - tail.size + i + 1}] ${line.take(200)}")
+            }
+        }
+    }
+
+    /** 单次健康探测：HTTP 200..499 即算起来（Web UI 有响应） */
+    private fun probeOnce(port: Int): Boolean = runCatching {
+        val conn = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
+        conn.connectTimeout = 2_000
+        conn.readTimeout = 2_000
+        val code = conn.responseCode
+        conn.disconnect()
+        code in 200..499
+    }.getOrDefault(false)
 
     companion object {
         private const val TAG = "EngineSupervisor"

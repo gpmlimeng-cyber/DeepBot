@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">DSH Mobile</string>
+    <string name="app_name">DeepBot</string>
     <string name="notif_channel_engine">Agent Engine</string>
     <string name="notif_channel_engine_desc">Status of the DeepSeek Harness local engine</string>
     <string name="notif_title">DSH engine running</string>
@@ -38,7 +38,7 @@
     <string name="accessibility_hint">Accessibility service is off — "Screen tap" is unavailable</string>
 
     <!-- First-launch onboarding -->
-    <string name="ob_title">Welcome to DSH Mobile</string>
+    <string name="ob_title">Welcome to DeepBot</string>
     <string name="ob_subtitle">Set things up to your liking on first launch — you won\'t see this again.</string>
     <string name="ob_orientation_label">Default orientation</string>
     <string name="ob_orientation_desc">Portrait (phone) suits one-handed browsing; landscape switches to the desktop layout; auto follows device rotation (desktop layout while physically landscape)</string>
@@ -83,7 +83,35 @@
 
     <string name="setting_applies_on_return">applies when you go back</string>
     <string name="setting_scale">Page zoom</string>
-    <string name="setting_scale_sub">Adjust how web pages are scaled (browser zoom)</string>
+    <string name="setting_scale_sub">Tap to pick: 100% is recommended; other values may affect layout (the screen fit itself is handled by the system)</string>
+    <string name="setting_auto_hide">Auto-hide top bar</string>
+    <string name="setting_auto_hide_sub">Hide the status bar 2 seconds after the engine is ready. Tap the handle to bring it back.</string>
+    <string name="setting_theme">Theme</string>
+    <string name="setting_theme_sub">Shell colors: light, dark, or follow the system</string>
+    <string name="setting_theme_light">Light</string>
+    <string name="setting_theme_system">Auto</string>
+    <string name="setting_theme_dark">Dark</string>
+
+    <!-- 启动页（v1.2.121） -->
+    <string name="splash_tagline">Local AI workspace</string>
+    <string name="splash_starting_engine">Starting local engine… %1$ds</string>
+    <string name="splash_installing_runtime">Installing runtime %1$d%%</string>
+    <string name="splash_preparing">Preparing…</string>
+    <string name="splash_ready">Ready</string>
+    <string name="splash_backoff">Engine failed, retrying (%1$d)…</string>
+    <string name="splash_failed_reason">Could not start the engine: %1$s</string>
+    <string name="splash_retry">Retry</string>
+
+    <!-- 状态栏样式（v1.2.122） -->
+    <string name="setting_status_bar">Status bar</string>
+    <string name="setting_status_bar_sub">Transparent, tinted with the theme, or follow the system</string>
+    <string name="setting_status_bar_transparent">Transparent</string>
+    <string name="setting_status_bar_theme">Theme color</string>
+    <string name="setting_status_bar_system">Follow system</string>
+    <string name="setting_applies_live">applies immediately</string>
+    <string name="setting_inset_fix">Safe-area padding</string>
+    <string name="setting_inset_fix_sub">Injects bottom padding for the bottom bar and the gesture bar (shell-side; the file $DSH_HOME/deepbot/inject.json decides what goes in)</string>
+
 
     <string name="setting_priv_mode">Permission mode</string>
     <string name="setting_priv_mode_sub">Sets how much of the system the AI can reach. Switching restarts the engine</string>
@@ -103,7 +131,7 @@
     <string name="setting_restart_engine">Restart engine</string>
     <string name="setting_restart_engine_sub">Reload the runtime and extensions (self-heals after a crash)</string>
     <string name="setting_about">About</string>
-    <string name="setting_about_sub">DSH Mobile · version %1$s</string>
+    <string name="setting_about_sub">DeepBot · version %1$s</string>
 
     <!-- Extension Center (v1.2.0): red = not downloaded, yellow = downloaded but inactive, green = activated -->
     <string name="settings_section_ext">Extensions</string>
@@ -181,9 +209,9 @@ They will be re-downloaded and reinstalled (with dependency closures). If a "per
 
     <!-- About -->
     <string name="about_title">About</string>
-    <string name="about_app_name">DSH Mobile</string>
+    <string name="about_app_name">DeepBot</string>
     <string name="about_version">Version %1$s</string>
-    <string name="about_intro">DSH Mobile is a local engine shell for DeepSeek Harness (DSH) on Android: it runs the full Node.js agent engine inside the phone\'s sandbox — no server needed, and no data ever leaves the device.</string>
+    <string name="about_intro">DeepBot is a local engine shell for DeepSeek Harness (DSH) on Android: it runs the full Node.js agent engine inside the phone\'s sandbox — no server needed, and no data ever leaves the device.</string>
     <string name="about_based">Built on the DeepSeek Harness (dsh) agent framework, open-sourced by DeepSeek in Aug 2026</string>
     <string name="about_author">Author: Soodok</string>
     <string name="about_open_source">Source code</string>
@@ -303,8 +331,8 @@ You can still continue without updating, but the interface will not display.</st
     <string name="asrapp_step2_title">2. Open it and download a model</string>
     <string name="asrapp_step2_body">Open it from this page (the entry above) or from the system Voice input settings. Go to Models and download one. zipformer-zh-14m-int8 is small and fast - good to start with. Pick paraformer-zh-int8 if you want better accuracy and have space. Models stay on your device; the download source follows your system language (HuggingFace official for English, a China-reachable mirror for Chinese) and can be overridden in the app settings.</string>
     <string name="asrapp_step3_title">3. Make it the system recognizer</string>
-    <string name="asrapp_step3_body">Inside the app, tap Set as system default. It needs Shizuku or root; without either, go to Settings - Languages &amp; input - Voice input and pick the app there. On ROMs that redirect that page, you can instead choose it directly here in DSH Mobile (see the Recognition engine setting).</string>
-    <string name="asrapp_step4_title">4. Activate it in DSH Mobile</string>
+    <string name="asrapp_step3_body">Inside the app, tap Set as system default. It needs Shizuku or root; without either, go to Settings - Languages &amp; input - Voice input and pick the app there. On ROMs that redirect that page, you can instead choose it directly here in DeepBot (see the Recognition engine setting).</string>
+    <string name="asrapp_step4_title">4. Activate it in DeepBot</string>
     <string name="asrapp_step4_body">Go back to Voice services - Speech recognition and set Recognition engine to the DSH offline recognizer. Then tap the floating microphone: recognition now runs fully offline. Tap Run check inside the recognizer app any time to verify every step.</string>
 
     <string name="asrapp_trouble_title">If something does not work</string>
@@ -396,4 +424,8 @@ You can still continue without updating, but the interface will not display.</st
     <string name="voice_opening_session">Opening conversation…</string>
     <string name="voice_session_timeout">Conversation did not open, try again</string>
     <string name="voice_send_failed">Send failed: %1$s</string>
+    <string name="setting_reload_inject">Reload injection</string>
+    <string name="setting_reload_inject_sub">Re-reads inject.json on every page load; tap to reload the page now (no app restart)</string>
+    <string name="inject_reload_queued">Reloading the page on return</string>
+    <string name="scale_recommended">Recommended</string>
 </resources>

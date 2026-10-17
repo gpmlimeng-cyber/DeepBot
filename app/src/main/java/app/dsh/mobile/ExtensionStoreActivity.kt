@@ -55,7 +55,7 @@ class ExtensionStoreActivity : Activity() {
     )
 
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -112,7 +112,7 @@ class ExtensionStoreActivity : Activity() {
 
     private fun sectionHeader(title: String): TextView = TextView(this).apply {
         text = title
-        setTextColor(0xFF7DD3FC.toInt())
+        setTextColor(getColor(R.color.ds_accent))
         textSize = 13f
         setTypeface(typeface, Typeface.BOLD)
         setPadding(dp(8), dp(18), dp(8), dp(8))
@@ -126,7 +126,7 @@ class ExtensionStoreActivity : Activity() {
             },
             stateText = TextView(this).apply {
                 textSize = 12f
-                setTextColor(0xFF8A94A3.toInt())
+                setTextColor(getColor(R.color.ds_text_secondary))
             },
             action = TextView(this).apply {
                 textSize = 13f
@@ -141,7 +141,7 @@ class ExtensionStoreActivity : Activity() {
                 // 次要操作（重新安装 / 卸载）收进 ⋯ 菜单：行内只留一个主操作按钮，
                 // 把宽度让给扩展名与介绍文案（旧版 ⟳/✕ 两个文字符号按钮把描述挤没了）
                 setImageResource(R.drawable.ic_more_vert)
-                setColorFilter(0xFF8A94A3.toInt())
+                setColorFilter(getColor(R.color.ds_text_secondary))
                 contentDescription = getString(R.string.ext_more_cd)
                 scaleType = android.widget.ImageView.ScaleType.CENTER
                 val pad = dp(6)
@@ -154,7 +154,7 @@ class ExtensionStoreActivity : Activity() {
                 isFocusable = true
             },
             progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-                progressTintList = android.content.res.ColorStateList.valueOf(0xFF7DD3FC.toInt())
+                progressTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.ds_accent))
                 visibility = View.GONE
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, dp(8)
@@ -189,13 +189,13 @@ class ExtensionStoreActivity : Activity() {
                     addView(TextView(this@ExtensionStoreActivity).apply {
                         text = ext.name
                         textSize = 16f
-                        setTextColor(0xFFFFFFFF.toInt())
+                        setTextColor(getColor(R.color.ds_text_primary))
                     })
                     if (ext.desc.isNotEmpty()) addView(TextView(this@ExtensionStoreActivity).apply {
                         // 介绍文案（catalog desc）：上限两行，超出省略号，不再被按钮挤成竖条
                         text = ext.desc
                         textSize = 12f
-                        setTextColor(0xFF9AA5B4.toInt())
+                        setTextColor(getColor(R.color.ds_text_tertiary))
                         maxLines = 2
                         ellipsize = android.text.TextUtils.TruncateAt.END
                         setPadding(0, dp(3), 0, 0)
@@ -337,11 +337,11 @@ class ExtensionStoreActivity : Activity() {
         if (filled) {
             btn.setBackgroundResource(R.drawable.bg_btn_accent)
             btn.backgroundTintList = android.content.res.ColorStateList.valueOf(bgColor)
-            btn.setTextColor(0xFF101418.toInt())
+            btn.setTextColor(getColor(R.color.ds_on_accent))
         } else {
             btn.setBackgroundResource(R.drawable.bg_btn_outline)
             btn.backgroundTintList = null
-            btn.setTextColor(0xFFB0BAC7.toInt())
+            btn.setTextColor(getColor(R.color.ds_text_secondary))
         }
     }
 

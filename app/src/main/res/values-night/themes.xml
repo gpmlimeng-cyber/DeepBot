@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色档：状态栏改用浅色图标（颜色本身由 values-night/colors.xml 提供） -->
+    <style name="Theme.Dsh" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/ds_bg_base</item>
+        <item name="android:navigationBarColor">@color/ds_bg_base</item>
+        <item name="android:windowBackground">@color/ds_bg_base</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:alertDialogTheme">@style/Theme.Dsh.Dialog</item>
+    </style>
+</resources>
