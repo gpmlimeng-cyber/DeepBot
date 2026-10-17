@@ -460,12 +460,9 @@
     <string name="splash_loading">正在加载界面…</string>
     <string name="splash_hint">请稍等几秒…</string>
     <string name="setting_ui_mode">界面模式</string>
-    <string name="setting_ui_mode_sub">手机 / 折叠 / 平板 / 电脑四档，默认手机，不随横竖屏自动切换</string>
+    <string name="setting_ui_mode_sub">手机 / 折叠 / 平板 / 电脑四档，默认手机，不随横竖屏自动切换；折叠档按当前实际宽度在 425/608/860 间就近适配</string>
     <string name="ui_mode_phone">手机</string>
     <string name="ui_mode_tablet">平板</string>
     <string name="ui_mode_desktop">电脑</string>
     <string name="ui_mode_fold">折叠</string>
-    <string name="ui_mode_fold_closed">折叠（外屏）</string>
-    <string name="ui_mode_fold_open">展开（内屏竖屏）</string>
-    <string name="ui_mode_fold_open_landscape">展开（内屏横屏）</string>
 </resources>

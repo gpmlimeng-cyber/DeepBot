@@ -258,7 +258,7 @@ class MainActivity : Activity() {
                 settings.useWideViewPort = false
                 settings.loadWithOverviewMode = false
             }
-            UiMode.FOLD_CLOSED, UiMode.FOLD_OPEN, UiMode.FOLD_OPEN_LANDSCAPE -> {
+            UiMode.FOLD -> {
                 settings.userAgentString = defaultUa
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = false
@@ -282,9 +282,7 @@ class MainActivity : Activity() {
     private fun applyUiViewport(view: WebView) {
         when (uiMode) {
             UiMode.PHONE -> Unit
-            UiMode.FOLD_CLOSED -> view.evaluateJavascript(viewportJs(FOLD_CLOSED_CSS), null)
-            UiMode.FOLD_OPEN -> view.evaluateJavascript(viewportJs(FOLD_OPEN_CSS), null)
-            UiMode.FOLD_OPEN_LANDSCAPE -> view.evaluateJavascript(viewportJs(FOLD_OPEN_LANDSCAPE_CSS), null)
+            UiMode.FOLD -> view.evaluateJavascript(viewportJs(foldWidthCss()), null)
             UiMode.TABLET -> view.evaluateJavascript(TABLET_VIEWPORT_JS, null)
             UiMode.DESKTOP -> view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
         }
@@ -1345,6 +1343,29 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 折叠档实际用的布局宽（CSS px）：取与当前可用宽度最接近的那个常量。
+     *
+     * 为什么不写死一个：折叠屏有外屏/内屏竖/内屏横三种形态，写死任一个都会在
+     * 另外两种下排版错位；而我们**不用传感器自动翻转**（用户手选折叠档即可）。
+     * 这里只读「当前 WebView 物理宽 ÷ 密度」做就近匹配，也就是运行时兜底：
+     * 真实可用宽度（分屏/铰链/导航条占位）与常量差得远时落回最近的档位。
+     */
+    private fun foldWidthCss(): Int {
+        val d = effectiveDensityOf().coerceAtLeast(0.5f)
+        val avail = if (::webView.isInitialized) webView.width / d else FOLD_CLOSED_CSS.toFloat()
+        val candidates = listOf(FOLD_CLOSED_CSS, FOLD_OPEN_CSS, FOLD_OPEN_LANDSCAPE_CSS)
+        return candidates.minByOrNull { kotlin.math.abs(it - avail) } ?: FOLD_CLOSED_CSS
+    }
+
+    /** 与 WebView 一致的有效密度（副屏 density=1 时退回系统主屏） */
+    private fun effectiveDensityOf(): Float {
+        val cur = if (::webView.isInitialized) webView.resources.displayMetrics.density
+        else resources.displayMetrics.density
+        val sys = android.content.res.Resources.getSystem().displayMetrics.density
+        return if (sys > cur * 1.05f) sys else cur
+    }
+
     companion object {
         /** WebView 文件选择器的请求码（onShowFileChooser → onActivityResult） */
         private const val REQ_FILE_CHOOSER = 1001
@@ -1703,7 +1724,7 @@ class MainActivity : Activity() {
         private const val FOLD_OPEN_CSS = 608
         private const val FOLD_OPEN_LANDSCAPE_CSS = 860
 
-        /** 固定宽带视口（折叠/平板/电脑共用）：W 为 CSS px，按屏宽缩放塞进可视区 */
+    /** 固定宽带视口（折叠/平板/电脑共用）：W 为 CSS px，按屏宽缩放塞进可视区 */
         private fun viewportJs(w: Int): String =
             "(function(){" +
                 "var W=$w;" +

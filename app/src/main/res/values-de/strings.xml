@@ -474,7 +474,4 @@ Sie können auch ohne Update fortfahren, die Oberfläche wird dann aber nicht an
     <string name="ui_mode_tablet">Tablet</string>
     <string name="ui_mode_desktop">Desktop</string>
     <string name="ui_mode_fold">Fold</string>
-    <string name="ui_mode_fold_closed">Faltbar (außen)</string>
-    <string name="ui_mode_fold_open">Aufgeklappt (innen, hoch)</string>
-    <string name="ui_mode_fold_open_landscape">Aufgeklappt (innen, quer)</string>
 </resources>

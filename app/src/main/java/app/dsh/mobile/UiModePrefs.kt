@@ -20,12 +20,8 @@ import android.content.SharedPreferences
  */
 enum class UiMode(val key: String) {
     PHONE("phone"),
-    /** 折叠态（外屏）425 CSS px */
-    FOLD_CLOSED("fold_closed"),
-    /** 展开态（内屏竖屏）608 CSS px */
-    FOLD_OPEN("fold_open"),
-    /** 展开态（内屏横屏）860 CSS px */
-    FOLD_OPEN_LANDSCAPE("fold_open_landscape"),
+    /** 折叠屏：425（外屏）/ 608（内屏竖）/ 860（内屏横），运行时按实际可用宽度就近取 */
+    FOLD("fold"),
     TABLET("tablet"),
     DESKTOP("desktop");
 
