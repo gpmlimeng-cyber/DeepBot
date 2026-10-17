@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/versions.env"
 
-OUT="$ROOT/app/src/main/assets/deepbot/ds-bot.zip"
+OUT="$ROOT/android/app/src/main/assets/deepbot/ds-bot.zip"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 

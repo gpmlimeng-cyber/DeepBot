@@ -176,7 +176,7 @@ Normal mode is the default; choose Shizuku or Root only when the task requires a
 **Build from source** (JDK 17 + Android SDK, NDK r26+, CMake 3.22.1):
 
 ```bash
-./scripts/collect-termux-runtime.sh app/src/main/assets/runtime.zip aarch64
+./runtime/collect-termux-runtime.sh android/app/src/main/assets/runtime.zip aarch64
 gradle assembleDebug -Pabi=arm64-v8a
 ```
 

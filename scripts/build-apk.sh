@@ -14,7 +14,7 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 . "$ROOT/versions.env"
 
-RUNTIME_ZIP="$ROOT/app/src/main/assets/runtime.zip"
+RUNTIME_ZIP="$ROOT/android/app/src/main/assets/runtime.zip"
 REBUILD_RUNTIME=0
 [ "${1:-}" = "--rebuild-runtime" ] && REBUILD_RUNTIME=1
 
@@ -38,6 +38,6 @@ echo "== ② 取 ds-bot 并打包"
 echo "== ③ 编译 APK"
 ./gradlew assembleDebug
 
-APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
+APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 echo "== 完成：$APK"
 sha256sum "$APK"
