@@ -66,8 +66,9 @@
     <color name="ds_toast_text">#FFFFFFFF</color>
     <color name="ic_launcher_background">#0A0A0B</color>
     <!-- 启动页（v1.2.122）：与图标一致的黑底 + 亮字，避免浅色 splash 与深色 mark 打架 -->
-    <color name="splash_bg">#0A0A0B</color>
-    <color name="splash_text">#FFFFFF</color>
-    <color name="splash_text_dim">#9A9AA0</color>
+    <color name="splash_bg">#EFEFEC</color>
+    <color name="splash_text">#0A0A0B</color>
+    <color name="splash_text_dim">#5C5C63</color>
     <color name="splash_error">#FF6B6B</color>
+    <color name="splash_track">#1F000000</color>
 </resources>
