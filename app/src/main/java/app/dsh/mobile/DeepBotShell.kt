@@ -167,6 +167,19 @@ class DeepBotShell(
         base["screenWidthDp"] = activity.resources.configuration.screenWidthDp
         base["screenHeightDp"] = activity.resources.configuration.screenHeightDp
         base["densityDpi"] = activity.resources.configuration.densityDpi
+        // 主题诊断（v1.3.4）：壳子页出现「浅底白字/白图标」时，先分清是**资源没切到浅色**
+        // 还是**图标本身写死白色**。这三个值一次摆出来：
+        //   configUiMode        —— 本 Activity 实际解析到的 uiMode（含 NIGHT 位）
+        //   nightActive         —— 是否按深色资源在渲染
+        //   textPrimaryResolved —— ds_text_primary 解出来的真实像素值
+        val cfg = activity.resources.configuration
+        base["configUiMode"] = "0x" + Integer.toHexString(cfg.uiMode)
+        base["nightActive"] = (cfg.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        base["textPrimaryResolved"] = runCatching {
+            "#" + Integer.toHexString(activity.getColor(R.color.ds_text_primary)).uppercase()
+        }.getOrNull()
+        base["themePref"] = ThemePrefs.get(activity).key
         base["plugins"] = ShellState.deployedPlugins(activity)
         base["pluginsNote"] = "壳侧部署清单（引擎目录 android-plugins），不等于运行期已挂载"
         // 先落一版壳侧字段：页面量取是异步回调，量不到时文件里也至少有壳知道的事实

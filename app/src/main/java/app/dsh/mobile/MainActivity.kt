@@ -92,7 +92,11 @@ class MainActivity : Activity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(LocaleHelper.wrap(newBase))
+        // v1.3.4：主壳也走一遍主题包装。此前只有设置页/关于页等子页包了，主壳没包，
+        // 于是「壳主题」在子页与主壳之间可能取到不同的一套 colors.xml。
+        // 注意只在**创建时**生效：主题档位改了之后不自动 recreate 主壳——那会把 WebView
+        // 连同页面状态（含未发送的草稿）一起重建，代价太大；下次冷启动自然对齐。
+        super.attachBaseContext(ThemeHelper.wrap(LocaleHelper.wrap(newBase)))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
