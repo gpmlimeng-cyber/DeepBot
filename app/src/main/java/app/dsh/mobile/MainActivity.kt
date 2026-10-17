@@ -292,6 +292,11 @@ class MainActivity : Activity() {
     }
 
     private fun setupWebView() {
+        // 壳侧 JS 桥（v1.3.3）：只暴露一个方法——「打开壳设置」。
+        // 页面是引擎自己的本地服务（127.0.0.1），注入脚本靠它给「我的」页加一行入口，
+        // 这样不碰 ds-bot 源码；卸载/升级 ds-bot 也不影响这个入口。
+        // 暴露面刻意做小：没有返回值、不接受参数、不读页面数据。
+        runCatching { webView.addJavascriptInterface(ShellBridge(), "DeepBotShell") }
         defaultUa = webView.settings.userAgentString
         webView.settings.apply {
             javaScriptEnabled = true
@@ -1340,6 +1345,31 @@ class MainActivity : Activity() {
             logWebView("webview recovery failed: ${it.message} — recreating activity")
             runCatching { recreate() }
         }
+    }
+
+    /**
+     * 注入脚本 → 壳 的桥（v1.3.3）。
+     *
+     * 为什么需要它：用户要在「我的」页有一个壳设置的入口，但**不改 ds-bot 源码**。
+     * 于是由壳注入一小段脚本，在设置列表末尾加一行；脚本调这里打开 [SettingsActivity]。
+     *
+     * 暴露面刻意最小：两个方法，且都不能读写页面数据 —— 页面是引擎自己的本地服务，
+     * 但 WebView 里跑的仍是第三方的 JS，能少给就少给。
+     * 注意：这些方法由 WebView 的 JavaBridge 线程调用，不是主线程。
+     */
+    inner class ShellBridge {
+        @android.webkit.JavascriptInterface
+        fun openSettings() {
+            runOnUiThread {
+                runCatching {
+                    startActivity(android.content.Intent(this@MainActivity, SettingsActivity::class.java))
+                }.onFailure { logWebView("shell bridge openSettings failed: ${it.message}") }
+            }
+        }
+
+        /** 注入脚本用它判断壳版本（老壳没有桥时不至于反复重试） */
+        @android.webkit.JavascriptInterface
+        fun version(): String = "1.3.3"
     }
 
     /** WebView 诊断日志（写 logcat + engine.log，用户可导出） */

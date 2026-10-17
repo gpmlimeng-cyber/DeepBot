@@ -85,6 +85,63 @@ object InjectSpec {
     /** 共享目录里的同级文件（用户可直接编辑，不碰 App 私有目录） */
     private const val SHARED = "/storage/emulated/0/DSH/deepbot/inject.json"
 
+    /**
+     * 壳侧常驻注入脚本（v1.3.3）：「我的」页里加一行壳设置入口。
+     *
+     * 为什么走注入而不是改 ds-bot：用户要求不碰 ds-bot 源码，卸载/升级 ds-bot
+     * 都不该影响这个入口。脚本自己幂等（`__deepbotShellEntry` 哨兵 + 行 id 哨兵），
+     * 靠 MutationObserver 应对路由切换与重渲染。
+     *
+     * 行的样式**复用 ds-bot 自己的**（bt-settings-item / bt-settings-shell /
+     * bt-settings-name / bt-set-go），图标与箭头从同卡片已有行 clone，
+     * 不自造样式，也不受类名哈希变化影响。
+     */
+    private val SHELL_ENTRY_JS = """
+(function(){
+  if (window.__deepbotShellEntry) return;
+  if (!window.DeepBotShell) return;
+  window.__deepbotShellEntry = 1;
+  var ROW_ID = 'deepbot-shell-row';
+  function buildRow(tpl){
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = ROW_ID;
+    btn.className = 'bt-settings-item bt-settings-shell';
+    btn.title = 'DeepBot shell settings: status bar, injection, zoom, permissions';
+    var ic = tpl ? tpl.querySelector('svg') : null;
+    if (ic) btn.appendChild(ic.cloneNode(true));
+    var name = document.createElement('span');
+    name.className = 'bt-settings-name';
+    name.textContent = 'DeepBot 设置';
+    btn.appendChild(name);
+    var go = tpl ? tpl.querySelector('.bt-set-go') : null;
+    if (go) btn.appendChild(go.cloneNode(true));
+    btn.addEventListener('click', function(ev){
+      ev.preventDefault(); ev.stopPropagation();
+      try { window.DeepBotShell.openSettings(); } catch (e) {}
+    });
+    return btn;
+  }
+  function tick(){
+    if (!document.documentElement.hasAttribute('data-bt-mobile')) return;
+    if (!document.querySelector('.bt-settings-layer')) return;
+    if (document.getElementById(ROW_ID)) return;
+    var cards = document.querySelectorAll('.bt-settings-group-card');
+    if (!cards.length) return;
+    var card = cards[cards.length - 1];
+    var tpl = card.querySelector('.bt-settings-shell') || card.querySelector('.bt-settings-item');
+    card.appendChild(buildRow(tpl));
+  }
+  function schedule(){ setTimeout(tick, 0); }
+  try { new MutationObserver(schedule).observe(document.body, {childList:true, subtree:true}); } catch(e){}
+  tick();
+})();
+    """.trimIndent()
+
+    /** 注入时总是追加执行的脚本（与 inject.json 的 js 合并，不受用户文件影响） */
+    val DEFAULT_JS: List<String> = listOf(SHELL_ENTRY_JS)
+
+
     /** 一次注入要用的内容（已按文件解析好） */
     /** source：命中的文件来源，shared / private / builtin —— 排查「改了不生效」时第一眼要看它 */
     class Spec(val css: List<String>, val js: List<String>, val probe: Boolean, val source: String)
@@ -103,9 +160,13 @@ object InjectSpec {
     fun load(ctx: Context): Spec {
         val shared = sharedFile()
         val priv = file(ctx)
-        val spec = read(shared, "shared")
+        val loaded = read(shared, "shared")
             ?: read(priv, "private")
             ?: Spec(listOf(DEFAULT_CSS), emptyList(), true, "builtin")
+        // 壳侧常驻脚本总是追加（v1.3.3）：「我的」页的壳设置入口不该被用户文件挤掉，
+        // 也不该因为共享文件读不到就消失。脚本自己幂等。
+        val spec = if (loaded.js.any { it.contains("__deepbotShellEntry") }) loaded
+        else Spec(loaded.css, loaded.js + DEFAULT_JS, loaded.probe, loaded.source)
         // 来源 + 路径打一行（只在来源/路径变化时打，避免每页刷屏）：
         // 「我改了共享文件为什么不生效」第一眼看这行就知道读的是哪份。
         val path = when (spec.source) {
