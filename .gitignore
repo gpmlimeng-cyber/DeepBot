@@ -45,3 +45,5 @@ node_modules/
 # dev probe artifacts
 scripts/probes/_parts/
 scripts/probes/*.bin
+# ds-bot 构建产物：由 scripts/fetch-dsbot.sh 按 versions.env 的 commit 现取现打
+app/src/main/assets/deepbot/ds-bot.zip
