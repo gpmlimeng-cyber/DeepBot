@@ -10,7 +10,7 @@ import android.content.SharedPreferences
  * 但桌面模式本身有用，所以改成**用户显式选择**，默认手机。
  *
  *   手机：手机 UA，`device-width`，useWideViewPort=false
- *   折叠：手机 UA，注入 `width=452`（这台设备折叠态的内屏 `widthDp≈452.4`）
+ *   折叠：手机 UA，注入 `width=425`（实测 dumpsys display：外屏 1168×1712 @2.75）
  *   平板：平板 UA，注入 `width=768` 的 viewport
  *   电脑：桌面 UA，注入上游现成的 `width=1280` 视口（DESKTOP_VIEWPORT_JS）
  *

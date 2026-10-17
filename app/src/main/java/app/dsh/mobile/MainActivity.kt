@@ -1691,12 +1691,22 @@ class MainActivity : Activity() {
          * 允许双指缩放细看。执行时机 onPageFinished（此时 clientWidth=设备宽）。
          */
         /**
-         * 折叠态内屏宽度（CSS px）。
+         * 折叠态（外屏）布局宽度，CSS px。
          *
-         * 来源：这台设备折叠态的 `widthDp ≈ 452.4`（`Configuration.screenWidthDp`），
-         * 取整 452。展开态不在这里判断——那要等接 WindowManager 的 FoldingFeature。
+         * 实测自 `dumpsys display`（本机，density 2.75）：
+         *   折叠态（外屏）1168 × 1712 px → 425 × 623 dp
+         *   展开态（内屏）1672 × 2364 px → 608 × 860 dp
+         * 与 WebView 里量到的 `cw=424 / dpr=2.75` 一致。
          */
-        private const val FOLD_WIDTH_CSS = 452
+        private const val FOLD_WIDTH_CSS = 425
+
+        /**
+         * 展开态（内屏）布局宽度，CSS px —— **暂不启用**。
+         * 等接 Jetpack WindowManager 的 FoldingFeature（hinge 姿态）后再按状态切换；
+         * 现在写死会让「折叠着拿」也按 608 排版。
+         */
+        @Suppress("unused")
+        private const val UNFOLDED_WIDTH_CSS = 608
 
         /** 折叠视口：固定 FOLD_WIDTH_CSS 宽，按屏宽缩放 */
         private fun foldViewportJs(): String =
