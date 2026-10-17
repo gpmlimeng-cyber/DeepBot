@@ -24,9 +24,9 @@ object UpdateChecker {
     private const val TAG = "UpdateChecker"
 
     /** 仓库（与 README 中的开源地址一致） */
-    private const val API = "https://api.github.com/repos/Soodok/Deepseek-Harness-Local-Android/releases"
+    private const val API = "https://api.github.com/repos/gpmlimeng-cyber/DeepBot/releases"
 
-    const val RELEASES_PAGE = "https://github.com/Soodok/Deepseek-Harness-Local-Android/releases"
+    const val RELEASES_PAGE = "https://github.com/gpmlimeng-cyber/DeepBot/releases"
 
     private const val CONNECT_TIMEOUT_MS = 10_000
     private const val READ_TIMEOUT_MS = 15_000

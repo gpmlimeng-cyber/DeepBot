@@ -8,7 +8,7 @@
 
 > 🌐 [English](README_EN.md) · [Deutsch](README.de.md)
 
-[![CI](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/android-build.yml/badge.svg)](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/android-build.yml)
+[![CI](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/android-build.yml/badge.svg)](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/android-build.yml)
 ![Release](https://img.shields.io/badge/release-v1.3.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-brightgreen)
@@ -178,7 +178,7 @@ specialUse 前台服务 + 指数退避监督器扛住系统回收，长任务锁
 
 ## 📦 安装
 
-**下载 Release（推荐）**：前往 [Releases](https://github.com/Soodok/Deepseek-Harness-Local-Android/releases) 下载 APK（手机选 `arm64-v8a`，最新版 **v1.3.0**），允许安装未知来源应用后安装。
+**下载 Release（推荐）**：前往 [Releases](https://github.com/gpmlimeng-cyber/DeepBot/releases) 下载 APK（手机选 `arm64-v8a`，最新版 **v1.3.0**），允许安装未知来源应用后安装。
 
 > 📦 **Release 里有多种包，怎么选**：普通用户下 **`dsh-mobile-*-arm64-v8a.apk`**（正式签名）；
 > 文件名带 **`-debug`** 的是调试签名版，供抓日志调试、或之前就装 debug 渠道的用户继续升级用；
@@ -308,7 +308,7 @@ ds-bot 给底栏留 56px 的规则挂在 `[data-dsh-frame]` 上（`src/client/na
 
 ## 反馈
 
-遇到问题或功能建议，欢迎提交 [Issue](https://github.com/Soodok/Deepseek-Harness-Local-Android/issues)；崩溃类问题请附上 `logcat` 输出或应用内的引擎日志。
+遇到问题或功能建议，欢迎提交 [Issue](https://github.com/gpmlimeng-cyber/DeepBot/issues)；崩溃类问题请附上 `logcat` 输出或应用内的引擎日志。
 
 ## 许可证
 

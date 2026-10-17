@@ -2,8 +2,8 @@
 
 **Der vollständige Android-Port von DeepSeek Harness — die offizielle dsh-Engine läuft unverändert in der App-Sandbox. Ohne Root, ohne Termux, ohne PC.**
 
-[![CI](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/android-build.yml/badge.svg)](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/android-build.yml)
-![i18n](https://github.com/Soodok/Deepseek-Harness-Local-Android/actions/workflows/i18n-check.yml/badge.svg)
+[![CI](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/android-build.yml/badge.svg)](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/android-build.yml)
+![i18n](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/i18n-check.yml/badge.svg)
 ![Release](https://img.shields.io/badge/release-v1.3.0-blue)
 ![Plattform](https://img.shields.io/badge/platform-Android%208.0%2B-green)
 ![Lizenz](https://img.shields.io/badge/license-MIT-brightgreen)
@@ -159,7 +159,7 @@ Normaler Modus ist der Standard; Optionen, deren Fähigkeit noch nicht bereitste
 
 ## 📦 Installation
 
-**Release herunterladen (empfohlen)**: Hol dir die APK von [Releases](https://github.com/Soodok/Deepseek-Harness-Local-Android/releases) (für Smartphones `arm64-v8a` wählen; aktuell **v1.3.0**), und installiere sie, nachdem du Installationen unbekannter Quellen erlaubt hast. Jede Version ab v1.0.0 lässt sich über die bestehende App installieren.
+**Release herunterladen (empfohlen)**: Hol dir die APK von [Releases](https://github.com/gpmlimeng-cyber/DeepBot/releases) (für Smartphones `arm64-v8a` wählen; aktuell **v1.3.0**), und installiere sie, nachdem du Installationen unbekannter Quellen erlaubt hast. Jede Version ab v1.0.0 lässt sich über die bestehende App installieren.
 
 **Aus dem Quelltext bauen** (JDK 17 + Android SDK, NDK r26+, CMake 3.22.1):
 
@@ -210,7 +210,7 @@ Alternativ: Forke das Repository und lasse den Workflow **android-build** auf Gi
 
 ## Feedback
 
-Fehler gefunden oder eine Funktion vorgeschlagen? Eröffne ein [Issue](https://github.com/Soodok/Deepseek-Harness-Local-Android/issues). Für Absturzberichte bitte die `logcat`-Ausgabe oder das in der App zugängliche Engine-Log anhängen.
+Fehler gefunden oder eine Funktion vorgeschlagen? Eröffne ein [Issue](https://github.com/gpmlimeng-cyber/DeepBot/issues). Für Absturzberichte bitte die `logcat`-Ausgabe oder das in der App zugängliche Engine-Log anhängen.
 
 ## Lizenz
 
