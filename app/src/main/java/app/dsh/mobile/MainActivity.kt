@@ -1361,15 +1361,34 @@ class MainActivity : Activity() {
         @android.webkit.JavascriptInterface
         fun openSettings() {
             runOnUiThread {
-                runCatching {
+                val result = runCatching {
                     startActivity(android.content.Intent(this@MainActivity, SettingsActivity::class.java))
-                }.onFailure { logWebView("shell bridge openSettings failed: ${it.message}") }
+                    "openSettings:ok"
+                }.getOrElse { "openSettings:failed:${it::class.simpleName}:${it.message}" }
+                app.dsh.mobile.engine.ShellState.write(this@MainActivity, mapOf("lastBridgeEvent" to result))
             }
         }
 
         /** 注入脚本用它判断壳版本（老壳没有桥时不至于反复重试） */
         @android.webkit.JavascriptInterface
         fun version(): String = "1.3.3"
+
+        /**
+         * 注入脚本回报一件小事（行插没插上、点了哪一行）。
+         *
+         * 为什么需要：`state.json` 只在页面加载/inset 变化时写，那时候还没进「我的」页，
+         * 光看它是分不清「桥没挂上」和「插入点选错卡片」的。让页面主动报一句，
+         * 下一次读 state.json 就能一眼分开。
+         */
+        @android.webkit.JavascriptInterface
+        fun report(event: String) {
+            runOnUiThread {
+                app.dsh.mobile.engine.ShellState.write(
+                    this@MainActivity,
+                    mapOf("lastBridgeEvent" to event.take(200))
+                )
+            }
+        }
     }
 
     /** WebView 诊断日志（写 logcat + engine.log，用户可导出） */

@@ -122,15 +122,25 @@ object InjectSpec {
     });
     return btn;
   }
+  // 回报一次就够：state.json 的 lastBridgeEvent 里能分清「桥没挂」「插入点没找到」
+  var missReported = 0;
+  function report(msg){ try { window.DeepBotShell.report(msg); } catch (e) {} }
   function tick(){
     if (!document.documentElement.hasAttribute('data-bt-mobile')) return;
-    if (!document.querySelector('.bt-settings-layer')) return;
+    if (!document.querySelector('.bt-settings-layer')) {
+      if (!missReported) { missReported = 1; report('entryMiss:noSettingsLayer'); }
+      return;
+    }
     if (document.getElementById(ROW_ID)) return;
     var cards = document.querySelectorAll('.bt-settings-group-card');
-    if (!cards.length) return;
+    if (!cards.length) {
+      if (!missReported) { missReported = 1; report('entryMiss:noGroupCard'); }
+      return;
+    }
     var card = cards[cards.length - 1];
     var tpl = card.querySelector('.bt-settings-shell') || card.querySelector('.bt-settings-item');
     card.appendChild(buildRow(tpl));
+    report('entryInserted:cards=' + cards.length + ':tpl=' + (tpl ? '1' : '0'));
   }
   function schedule(){ setTimeout(tick, 0); }
   try { new MutationObserver(schedule).observe(document.body, {childList:true, subtree:true}); } catch(e){}

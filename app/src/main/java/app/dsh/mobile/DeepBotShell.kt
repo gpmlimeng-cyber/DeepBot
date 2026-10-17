@@ -253,7 +253,11 @@ class DeepBotShell(
     ccW:r?Math.round(r.width):null,
     btMobile:d.getAttribute('data-bt-mobile'),
     btPortrait:d.getAttribute('data-bt-portrait'),
-    dshFrame:d.hasAttribute('data-dsh-frame')
+    dshFrame:d.hasAttribute('data-dsh-frame'),
+    bridge:typeof window.DeepBotShell !== 'undefined',
+    settingsLayer:!!document.querySelector('.bt-settings-layer'),
+    entryInserted:!!document.getElementById('deepbot-shell-row'),
+    groupCards:document.querySelectorAll('.bt-settings-group-card').length
   });
 }catch(e){return JSON.stringify({measureError:String(e)})}})()
         """.trimIndent()
