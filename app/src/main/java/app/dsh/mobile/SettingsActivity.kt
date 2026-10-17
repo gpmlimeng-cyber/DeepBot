@@ -209,7 +209,7 @@ class SettingsActivity : Activity() {
         // —— 显示：界面模式（v1.3.0，手机/平板/电脑，默认手机，不随朝向自动切）——
         findViewById<TextView>(R.id.valUiMode).text = getString(uiModeLabel(UiModePrefs.get(this)))
         findViewById<LinearLayout>(R.id.rowUiMode).setOnClickListener {
-            val modes = listOf(UiMode.PHONE, UiMode.FOLD, UiMode.TABLET, UiMode.DESKTOP)
+            val modes = listOf(UiMode.AUTO, UiMode.PHONE, UiMode.FOLD, UiMode.TABLET, UiMode.DESKTOP)
             val labels = modes.map { getString(uiModeLabel(it)) }.toTypedArray()
             val current = modes.indexOf(UiModePrefs.get(this)).coerceAtLeast(0)
             AlertDialog.Builder(this)
@@ -595,6 +595,7 @@ class SettingsActivity : Activity() {
      * 只落库，回到主界面时 MainActivity.onResume → applyStatusBar() 即时生效（不重启）。
      */
     private fun uiModeLabel(m: UiMode): Int = when (m) {
+        UiMode.AUTO -> R.string.ui_mode_auto
         UiMode.PHONE -> R.string.ui_mode_phone
         UiMode.FOLD -> R.string.ui_mode_fold
         UiMode.TABLET -> R.string.ui_mode_tablet

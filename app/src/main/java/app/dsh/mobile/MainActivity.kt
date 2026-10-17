@@ -253,7 +253,8 @@ class MainActivity : Activity() {
         uiMode = UiModePrefs.get(this)
         val settings = webView.settings
         when (uiMode) {
-            UiMode.PHONE -> {
+            // 自动 & 手机：都不注入宽度，走真实 device-width
+            UiMode.AUTO, UiMode.PHONE -> {
                 settings.userAgentString = defaultUa
                 settings.useWideViewPort = false
                 settings.loadWithOverviewMode = false
@@ -281,7 +282,9 @@ class MainActivity : Activity() {
     /** 进页面后按模式注入视口（手机不注入，交给系统按密度换算） */
     private fun applyUiViewport(view: WebView) {
         when (uiMode) {
-            UiMode.PHONE -> Unit
+            // 自动 & 手机：不注入任何宽度，用真实 device-width
+            UiMode.AUTO, UiMode.PHONE -> Unit
+            // 手动档才注入宽度
             UiMode.FOLD -> view.evaluateJavascript(viewportJs(foldWidthCss()), null)
             UiMode.TABLET -> view.evaluateJavascript(TABLET_VIEWPORT_JS, null)
             UiMode.DESKTOP -> view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)

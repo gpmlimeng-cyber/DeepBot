@@ -469,9 +469,10 @@ Sie können auch ohne Update fortfahren, die Oberfläche wird dann aber nicht an
     <string name="splash_loading">Oberfläche wird geladen…</string>
     <string name="splash_hint">Bitte warte ein paar Sekunden…</string>
     <string name="setting_ui_mode">Oberflächenmodus</string>
-    <string name="setting_ui_mode_sub">Handy / Faltbar / Tablet / Desktop. Standard: Handy; wechselt nie automatisch beim Drehen.</string>
+    <string name="setting_ui_mode_sub">Handy / Faltbar / Tablet / Desktop. Standard „Automatisch“ folgt der echten Gerätebreite.</string>
     <string name="ui_mode_phone">Handy</string>
     <string name="ui_mode_tablet">Tablet</string>
     <string name="ui_mode_desktop">Desktop</string>
     <string name="ui_mode_fold">Fold</string>
+    <string name="ui_mode_auto">Automatisch (Gerät)</string>
 </resources>

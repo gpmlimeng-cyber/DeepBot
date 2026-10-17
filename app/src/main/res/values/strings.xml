@@ -460,9 +460,10 @@ You can still continue without updating, but the interface will not display.</st
     <string name="splash_loading">Loading the interface…</string>
     <string name="splash_hint">Please wait a few seconds…</string>
     <string name="setting_ui_mode">Interface mode</string>
-    <string name="setting_ui_mode_sub">Phone / fold / tablet / desktop. Default phone; it never switches by rotation.</string>
+    <string name="setting_ui_mode_sub">Phone / fold / tablet / desktop. Auto (default) follows the real device width; it never switches layout by rotation.</string>
     <string name="ui_mode_phone">Phone</string>
     <string name="ui_mode_tablet">Tablet</string>
     <string name="ui_mode_desktop">Desktop</string>
     <string name="ui_mode_fold">Fold</string>
+    <string name="ui_mode_auto">Auto (follow device)</string>
 </resources>

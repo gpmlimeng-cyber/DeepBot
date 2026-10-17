@@ -9,6 +9,7 @@ import android.content.SharedPreferences
  * 取代原来的「按横竖屏自动切桌面」——自动切是错的（转个屏就换一整套布局），
  * 但桌面模式本身有用，所以改成**用户显式选择**，默认手机。
  *
+ *   自动（默认）：手机 UA，不注入宽度，用真实 device-width
  *   手机：手机 UA，`device-width`，useWideViewPort=false
  *   折叠：手机 UA，三个常量按用户手选（不跟传感器自动翻转）：
  *         外屏 425 / 展开竖屏 608 / 展开横屏 860（实测 dumpsys display @2.75）
@@ -19,6 +20,12 @@ import android.content.SharedPreferences
  * 再判断，现在不猜。
  */
 enum class UiMode(val key: String) {
+    /**
+     * 自动（默认）：不注入任何宽度，直接用 WebView 真实的 `device-width`。
+     * 折叠内外屏、竖屏横屏都是系统布局算好的，页面自己会重排——这是最诚实的实现，
+     * 不读传感器、不判断窗口、不调 setInitialScale。
+     */
+    AUTO("auto"),
     PHONE("phone"),
     /** 折叠屏：425（外屏）/ 608（内屏竖）/ 860（内屏横），运行时按实际可用宽度就近取 */
     FOLD("fold"),
@@ -26,7 +33,7 @@ enum class UiMode(val key: String) {
     DESKTOP("desktop");
 
     companion object {
-        fun fromKey(raw: String?): UiMode = entries.firstOrNull { it.key == raw } ?: PHONE
+        fun fromKey(raw: String?): UiMode = entries.firstOrNull { it.key == raw } ?: AUTO
     }
 }
 
@@ -35,7 +42,7 @@ object UiModePrefs {
     private const val KEY = "ui_mode"
 
     fun get(ctx: Context): UiMode =
-        UiMode.fromKey(prefs(ctx).getString(KEY, UiMode.PHONE.key))
+        UiMode.fromKey(prefs(ctx).getString(KEY, UiMode.AUTO.key))
 
     fun set(ctx: Context, mode: UiMode) {
         prefs(ctx).edit().putString(KEY, mode.key).apply()
