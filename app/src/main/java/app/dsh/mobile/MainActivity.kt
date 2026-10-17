@@ -51,6 +51,11 @@ class MainActivity : Activity() {
     private var orientationMode: OrientationMode = OrientationMode.PORTRAIT
 
     /** 页面缩放百分比（竖屏时应用；等价浏览器 Ctrl+/Ctrl-）。横屏桌面模式交给 1280px meta，不叠加 */
+    /** DeepBot 壳层（状态栏/安全区/注入）——单独文件，合并上游时基本不用动 */
+    private val shell by lazy { DeepBotShell(this) { if (::webView.isInitialized) webView else null } }
+
+    private var uiMode: UiMode = UiMode.PHONE
+
     private var pageScale = DEFAULT_PAGE_SCALE
 
     /** 本页当前生效的语言代码（onResume 比对，变了就重建） */
@@ -109,13 +114,14 @@ class MainActivity : Activity() {
         // 若写在 apply{} 里会在赋值完成前执行而触发 UninitializedPropertyAccessException。
         webView = findViewById<WebView>(R.id.webView)
         setupWebView()
+        applyUiMode()
+        shell.install()
+        shell.applyStatusBar()
         // 读回用户保存的页面缩放与屏幕朝向偏好
         readUiPrefs()
         applyOrientation(orientationMode)
         // v1.2.120：冷启动也要把桌面渲染落到偏好 —— 旧实现只在 onResume 的「偏好变化」
-        // 分支里 setDesktop，导致 landscape=true 冷启动时 UA/视口/缩放手势全是竖屏那套，
-        // 直到用户在设置里动过一次或旋转设备才恢复。
-        setDesktop(shouldUseDesktop())
+        // v1.3.0：界面模式由设置项决定（applyUiMode），不再随朝向自动切
 
         // 热重启：用户显式动作，完整 stop→start 链路；urlLoaded 复位让 Healthy 后重载 3080。
         // restart() 自身立即返回（内部串行 + 先置「启动中」），无需再套线程；重复点击幂等。
@@ -160,6 +166,13 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        runCatching { shell.applyStatusBar() }
+        val modeNow = UiModePrefs.get(this)
+        if (modeNow != uiMode) {
+            applyUiMode()
+            if (::webView.isInitialized) webView.reload()
+        }
+        if (InjectReloadPrefs.consume(this) && ::webView.isInitialized) webView.reload()
         // 🔴 v1.2.91：恢复 WebView 的 JS 定时器。
         // 主人实测「回到后台时通过语音发送消息，消息发出去了但模型不响应，
         // 切回前台才开始响应」—— 根因就是这里缺 webView.onResume()：
@@ -195,7 +208,6 @@ class MainActivity : Activity() {
         val oldMode = orientationMode
         readUiPrefs()
         if (oldMode != orientationMode) {
-            setDesktop(shouldUseDesktop())
             applyOrientation(orientationMode)
         }
         if (oldScale != pageScale || oldMode != orientationMode) {
@@ -233,16 +245,41 @@ class MainActivity : Activity() {
     }
 
     /**
-     * v1.2.120：当前是否应该走桌面渲染。
-     * landscape = 恒桌面；portrait = 恒移动；auto = 看**实际**朝向
-     * （物理横屏 → 桌面布局，竖屏 → 移动布局），旋转时由
-     * onConfigurationChanged 重新求值。
+     * 界面模式（v1.3.0）：**只认设置项**，不再随横竖屏自动切。
+     *
+     * 手机 / 平板 / 电脑三档，切完 reload 生效，不用重启 App。
      */
-    private fun shouldUseDesktop(): Boolean = when (orientationMode) {
-        OrientationMode.LANDSCAPE -> true
-        OrientationMode.PORTRAIT -> false
-        OrientationMode.AUTO ->
-            resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    private fun applyUiMode() {
+        uiMode = UiModePrefs.get(this)
+        val settings = webView.settings
+        when (uiMode) {
+            UiMode.PHONE -> {
+                settings.userAgentString = defaultUa
+                settings.useWideViewPort = false
+                settings.loadWithOverviewMode = false
+            }
+            UiMode.TABLET -> {
+                settings.userAgentString = defaultUa
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = false
+            }
+            UiMode.DESKTOP -> {
+                settings.userAgentString = DESKTOP_UA
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = false
+            }
+        }
+        applyZoomControls(uiMode != UiMode.PHONE)
+        desktopMode = uiMode == UiMode.DESKTOP
+    }
+
+    /** 进页面后按模式注入视口（手机不注入，交给系统按密度换算） */
+    private fun applyUiViewport(view: WebView) {
+        when (uiMode) {
+            UiMode.PHONE -> Unit
+            UiMode.TABLET -> view.evaluateJavascript(TABLET_VIEWPORT_JS, null)
+            UiMode.DESKTOP -> view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
+        }
     }
 
     private fun setupWebView() {
@@ -364,17 +401,10 @@ class MainActivity : Activity() {
                 if (view == null) return
                 // 环境自检：把 WebView 版本与关键 API 存在性写进日志，用户报障时一眼定位
                 view.evaluateJavascript(WEBVIEW_SELFCHECK_JS, null)
-                // 桌面模式：视口改写为固定 1280px（响应式走桌面分支，侧栏完整展开）。
-                if (desktopMode) {
-                    view.evaluateJavascript(DESKTOP_VIEWPORT_JS, null)
-                    return
-                }
-                // 竖屏：全交给 viewport meta 的 initial-scale 控制显示缩放（浏览器 Ctrl- 做法）。
-                // width=device-width → 布局宽=屏宽（无横向滚动）；initial-scale=R 直接缩放显示
-                //（缩小→按钮变小看更多、整页塞进屏；放大→内容变大）；min=max=R+user-scalable=no
-                // 彻底锁死（既不 clamp 到 100%，也不许用户手动改）。setInitialScale 易被 meta
-                // 干扰（maximum-scale=1 会把它 clamp 回 100%），故弃用。
-                view.evaluateJavascript(portraitViewportJs(pageScale / 100f), null)
+                // 视口按「界面模式」注入：手机不注入（系统按密度换算），平板 768，电脑 1280
+                applyUiViewport(view)
+                // 壳层注入：CSS 变量（CSS px）+ inject.json 规则 + 品牌替换
+                shell.inject()
                 // v1.3.1：首屏加载完成 → 淡出启动遮罩（页面这时才真的可以操作）
                 dismissSplash()
                 // 竖屏「对话流被挤压」修复已改为**引擎侧客户端插件**
@@ -481,10 +511,7 @@ class MainActivity : Activity() {
         // 旋转后屏宽变化 → 需要重算适配视口（reload 后 onPageFinished 会按当前模式
         // 与 pageScale 重写 viewport meta）。竖屏旋转屏宽同样变，故统一 reload。
         // 同时同步手势缩放开关（竖屏锁死、桌面保留），防止切屏后对手势失效。
-        // v1.2.120：auto 模式下桌面渲染跟随**实际**朝向——旋转后先按新朝向求值，
-        // 否则横屏后仍是竖屏那套 UA/视口。setDesktop 自身不 reload，reload 紧随其后。
-        setDesktop(shouldUseDesktop())
-        applyZoomControls(desktopMode)
+        // v1.3.0：旋转只重载页面，界面模式只认设置项（不再按朝向切桌面）
         webView.reload()
     }
 
@@ -1300,7 +1327,7 @@ class MainActivity : Activity() {
     }
 
     /** WebView 诊断日志（写 logcat + engine.log，用户可导出） */
-    private fun logWebView(message: String) {
+    internal fun logWebView(message: String) {
         android.util.Log.w("DshWebView", message)
         runCatching {
             val f = app.dsh.mobile.engine.EngineConfig.engineRoot(this).let {
@@ -1657,6 +1684,17 @@ class MainActivity : Activity() {
          * initial-scale = 屏宽/1280 整页缩进屏内；maximum-scale=5 + user-scalable
          * 允许双指缩放细看。执行时机 onPageFinished（此时 clientWidth=设备宽）。
          */
+        /** 平板视口：固定 768 宽，按屏宽缩放塞进可视区 */
+        private const val TABLET_VIEWPORT_JS =
+            "(function(){" +
+                "var W=768;" +
+                "var m=document.querySelector('meta[name=\"viewport\"]');" +
+                "if(!m){m=document.createElement('meta');m.setAttribute('name','viewport');" +
+                "(document.head||document.documentElement).appendChild(m);}" +
+                "var cw=document.documentElement.clientWidth||412;" +
+                "m.setAttribute('content','width='+W+', initial-scale='+Math.min(1,cw/W).toFixed(4)+', user-scalable=no');" +
+                "})()"
+
         private const val DESKTOP_VIEWPORT_JS =
             "(function(){" +
                 "var W=1280;" +

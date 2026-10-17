@@ -206,6 +206,23 @@ class SettingsActivity : Activity() {
         // —— 显示：状态栏样式（v1.2.122 三档，改完回主界面即时生效，不重启） ——
         statusBarMode = StatusBarPrefs.get(this)
         findViewById<TextView>(R.id.valStatusBar).text = getString(statusBarLabel(statusBarMode))
+        // —— 显示：界面模式（v1.3.0，手机/平板/电脑，默认手机，不随朝向自动切）——
+        findViewById<TextView>(R.id.valUiMode).text = getString(uiModeLabel(UiModePrefs.get(this)))
+        findViewById<LinearLayout>(R.id.rowUiMode).setOnClickListener {
+            val modes = listOf(UiMode.PHONE, UiMode.TABLET, UiMode.DESKTOP)
+            val labels = modes.map { getString(uiModeLabel(it)) }.toTypedArray()
+            val current = modes.indexOf(UiModePrefs.get(this)).coerceAtLeast(0)
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.setting_ui_mode))
+                .setSingleChoiceItems(labels, current) { dlg, which ->
+                    dlg.dismiss()
+                    UiModePrefs.set(this, modes[which])
+                    findViewById<TextView>(R.id.valUiMode).text = getString(uiModeLabel(modes[which]))
+                    Toast.makeText(this, getString(R.string.setting_applies_live), Toast.LENGTH_SHORT).show()
+                }
+                .showStyled()
+        }
+
         findViewById<LinearLayout>(R.id.rowStatusBar).setOnClickListener { showStatusBarDialog() }
 
         // —— 显示：底部安全区适配（v1.2.122，壳侧注入 CSS，默认开，可一键关）——
@@ -577,6 +594,12 @@ class SettingsActivity : Activity() {
      * 三档单选：透明 / 跟随主题色 / 跟随系统。
      * 只落库，回到主界面时 MainActivity.onResume → applyStatusBar() 即时生效（不重启）。
      */
+    private fun uiModeLabel(m: UiMode): Int = when (m) {
+        UiMode.PHONE -> R.string.ui_mode_phone
+        UiMode.TABLET -> R.string.ui_mode_tablet
+        UiMode.DESKTOP -> R.string.ui_mode_desktop
+    }
+
     private fun showStatusBarDialog() {
         val modes = listOf(
             StatusBarMode.TRANSPARENT,

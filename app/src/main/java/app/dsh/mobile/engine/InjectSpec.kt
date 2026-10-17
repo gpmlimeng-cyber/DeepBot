@@ -31,16 +31,16 @@ import java.io.File
 object InjectSpec {
 
     /** 内置默认规则集的版本号：私有文件版本低于它就自动迁移（v1.2.122） */
-    const val DEFAULT_VERSION = 4
+    const val DEFAULT_VERSION = 5
 
     /**
-     * 内置默认规则（五条）：
+     * 内置默认规则（三条）：
      *  1. 把 ds-bot 底栏的 56px 还给 DSH 的会话列；
      *  2. 键盘弹起时输入框贴键盘上沿（底栏留在键盘下，产品决定）；
      *  3. 收起的左侧抽屉不再往屏内渗阴影/描边；
-     *  4. 手机端隐藏 DSH 自带的收起侧栏列，**并把会话列撑满**——只 display:none 不够：
-     *     侧栏拿掉后外层 flex 不会自动把宽度让给中间列，实测 centerCol 会缩到 56px，
-     *     消息全挤在一条窄缝里（v2 的教训）。
+     * （v5 起不再内置 sidebarCol / centerCol 的容器规则：上游已用客户端插件
+     *  `assets/android-plugins/narrow-sidebar/` 解决「对话流被挤压」，走 dsh 官方
+     *  插件发现机制，卸载自清理、类名哈希也不会失效。容器宽度一律交给插件。）
      *
      * 第 3 条不是把抽屉 display:none —— `.bt-side.bt-rail` 本身就是手机上的抽屉
      * （sidebar.js:433，打开时靠 `[data-mobile-open]` 滑进来），隐藏了就没法打开。
@@ -55,14 +55,7 @@ object InjectSpec {
             "padding-bottom:calc(var(--dsh-android-ime-bottom,0px))!important}",
         "html[data-bt-mobile] .bt-side.bt-rail:not([data-mobile-open]){" +
             "box-shadow:none!important;border-right:0!important}",
-        "html[data-bt-mobile] [class*=\"sidebarCol\"]{" +
-            "display:none!important;width:0!important;min-width:0!important}",
-        // v4：v3 的 width:100% 没生效（实测 cc 仍 56px 宽）。两种可能都一起覆盖：
-        //   绝对定位 —— left/right 才是宽度来源；栅格自动排布 —— 侧栏那一列还在，
-        //   中间列被塞进 56px 的轨道里。所以同时给 left/right 与 grid-column。
-        "html[data-bt-mobile] [class*=\"centerCol\"]{" +
-            "left:0!important;right:0!important;width:auto!important;margin-left:0!important;" +
-            "grid-column:1/-1!important;flex:1 1 auto!important;min-width:0!important}",
+
     )
 
     /**
@@ -78,6 +71,12 @@ object InjectSpec {
         // v3：width:100% 在绝对/栅格布局下无效，已被 v4 那条取代
         "html[data-bt-mobile] [class*=\"centerCol\"]{" +
             "flex:1 1 auto!important;width:100%!important;min-width:0!important}",
+        // v4：靠 CSS 硬撑容器；v5 起交给 narrow-sidebar 插件，不再内置
+        "html[data-bt-mobile] [class*=\"sidebarCol\"]{" +
+            "display:none!important;width:0!important;min-width:0!important}",
+        "html[data-bt-mobile] [class*=\"centerCol\"]{" +
+            "left:0!important;right:0!important;width:auto!important;margin-left:0!important;" +
+            "grid-column:1/-1!important;flex:1 1 auto!important;min-width:0!important}",
     )
 
     /** 拼成一段 CSS（写进 <style id="dsh-inset-fix">） */

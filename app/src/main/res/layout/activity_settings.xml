@@ -335,6 +335,69 @@
                     android:layout_marginStart="66dp"
                     android:background="@color/ds_divider" />
 
+                <!-- 界面模式（v1.3.0）：手机 / 平板 / 电脑，默认手机，不随横竖屏自动切 -->
+                <LinearLayout
+                    android:id="@+id/rowUiMode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="14dp"
+                    android:background="?android:attr/selectableItemBackground">
+
+                    <ImageView
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:padding="8dp"
+                        android:src="@drawable/ic_display"
+                        android:background="@drawable/bg_icon_chip_soft"
+                        android:tint="#FF22C55E" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical"
+                        android:layout_marginStart="14dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/setting_ui_mode"
+                            android:textColor="@color/ds_text_primary"
+                            android:textSize="16sp" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/setting_ui_mode_sub"
+                            android:textColor="@color/ds_text_secondary"
+                            android:textSize="12sp"
+                            android:layout_marginTop="2dp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/valUiMode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ui_mode_phone"
+                        android:textColor="@color/ds_text_secondary"
+                        android:textSize="14sp"
+                        android:layout_marginEnd="6dp" />
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_chevron" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="0.5dp"
+                    android:layout_marginStart="66dp"
+                    android:background="@color/ds_divider" />
+
                 <!-- 状态栏样式（v1.2.122）：透明 / 跟随主题色 / 跟随系统 -->
                 <LinearLayout
                     android:id="@+id/rowStatusBar"

@@ -459,4 +459,9 @@
     <string name="splash_starting">正在启动引擎…</string>
     <string name="splash_loading">正在加载界面…</string>
     <string name="splash_hint">请稍等几秒…</string>
+    <string name="setting_ui_mode">界面模式</string>
+    <string name="setting_ui_mode_sub">手机 / 平板 / 电脑三档，默认手机，不随横竖屏自动切换</string>
+    <string name="ui_mode_phone">手机</string>
+    <string name="ui_mode_tablet">平板</string>
+    <string name="ui_mode_desktop">电脑</string>
 </resources>
