@@ -79,6 +79,34 @@ object InjectSpec {
             "grid-column:1/-1!important;flex:1 1 auto!important;min-width:0!important}",
     )
 
+    /**
+     * 这条规则是不是「底部/顶部安全区」相关（v1.3.9）。
+     *
+     * 背景：壳设置里那个「底部安全区适配」开关，早先的实现是**关闭时把整份 CSS 与 JS
+     * 一起丢空**——于是任何一次误关，都会把侧栏收缩、抽屉描边、壳设置入口这些与
+     * 安全区无关的注入一并关掉，而且界面上没有任何提示（2026-10-18 踩过：
+     * 连改三版注入全无反应，查了半天才发现开关是关的）。
+     *
+     * 现在语义收紧：开关只控制**读了安全区变量**的规则，其余规则永远下发。
+     * 判定按规则文本里是否引用下列变量，够用且不依赖类名哈希：
+     *   --dsh-android-system-top/bottom、--dsh-android-ime-bottom、
+     *   --dsh-mobile-bottom-inset、--dsh-safe-bottom、safe-area-inset-
+     */
+    fun isInsetRule(rule: String): Boolean = INSET_MARKERS.any { rule.contains(it) }
+
+    private val INSET_MARKERS = listOf(
+        "--dsh-android-system-top",
+        "--dsh-android-system-bottom",
+        "--dsh-android-ime-bottom",
+        "--dsh-mobile-bottom-inset",
+        "--dsh-safe-bottom",
+        "safe-area-inset-",
+    )
+
+    /** 按开关过滤：开关关闭时只留下与安全区无关的规则 */
+    fun rulesFor(rules: List<String>, insetFixEnabled: Boolean): List<String> =
+        if (insetFixEnabled) rules else rules.filterNot { isInsetRule(it) }
+
     /** 拼成一段 CSS（写进 <style id="dsh-inset-fix">） */
     val DEFAULT_CSS: String = DEFAULT_RULES.joinToString("\n")
 

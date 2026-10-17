@@ -110,7 +110,7 @@
     <string name="setting_status_bar_system">跟随系统</string>
     <string name="setting_applies_live">立即生效</string>
     <string name="setting_inset_fix">底部安全区适配</string>
-    <string name="setting_inset_fix_sub">为底栏与手势条注入底部留白（壳侧注入，规则在 $DSH_HOME/deepbot/inject.json，不改 ds-bot）</string>
+    <string name="setting_inset_fix_sub">只控制「底栏与手势条」的底部留白；其它注入（侧栏、抽屉、壳设置入口等）始终生效，不受这个开关影响。</string>
 
 
     <string name="setting_priv_mode">运行权限模式</string>

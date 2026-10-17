@@ -110,7 +110,7 @@
     <string name="setting_status_bar_system">Follow system</string>
     <string name="setting_applies_live">applies immediately</string>
     <string name="setting_inset_fix">Safe-area padding</string>
-    <string name="setting_inset_fix_sub">Injects bottom padding for the bottom bar and the gesture bar (shell-side; the file $DSH_HOME/deepbot/inject.json decides what goes in)</string>
+    <string name="setting_inset_fix_sub">Injects bottom padding for the bottom bar and the gesture bar. Only safe-area rules follow this switch; other injections always run.</string>
 
 
     <string name="setting_priv_mode">Permission mode</string>

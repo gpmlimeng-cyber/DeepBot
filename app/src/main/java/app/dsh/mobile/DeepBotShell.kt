@@ -127,9 +127,12 @@ class DeepBotShell(
             lastSource = spec.source
             activity.logWebView("inject source=${spec.source} css=${spec.css.size} js=${spec.js.size} probe=${spec.probe}")
         }
-        val css = if (fix) spec.css.joinToString("\n") else ""
-        val extra = if (fix) spec.js.joinToString("\n") else ""
-        val probe = if (fix && spec.probe) PROBE_JS else ""
+        // 注入永远下发（v1.3.9）：那个开关只管「读了安全区变量」的规则。
+        // 曾经它是总闸——关掉就整份 CSS/JS 都不下发，界面上还没有任何提示，
+        // 排查时表现为「改了几版注入全无反应」。
+        val css = InjectSpec.rulesFor(spec.css, fix).joinToString("\n")
+        val extra = spec.js.joinToString("\n")
+        val probe = if (spec.probe) PROBE_JS else ""
         val patch = if (css.isEmpty()) "" else
             "var s=document.createElement('style');s.id=id;" +
                 "s.textContent=${JSONObject.quote(css)};(document.head||d).appendChild(s);"
