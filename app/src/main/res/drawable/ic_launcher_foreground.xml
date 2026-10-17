@@ -8,6 +8,13 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- 满幅底座（v1.3.5）：前景自己铺满 108 画布，和 background 层同色 #0A0A0B。
+         mark 的深色底座只到 72dp，外面那圈原本是透明的，全靠背景层补；
+         启动器一旦用不同遮罩/额外留边，就会在接缝处露出「白边」。
+         这里把底色画进前景，两层同色且都满幅，任何裁切都不会露缝。 -->
+    <path
+        android:fillColor="#0A0A0B"
+        android:pathData="M0,0h108v108h-108z" />
     <group
         android:translateX="10.1143"
         android:translateY="10.1143"
