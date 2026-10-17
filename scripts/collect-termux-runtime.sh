@@ -134,6 +134,10 @@ if command -v python3 >/dev/null 2>&1; then
   # 而 dsh-app-boot 在宿主准备阶段就 require 它 → 引擎起不来。改用纯 JS 回退，
   # 依赖启动参数 --expose-internals（EngineProcess.kt 已带）。
   python3 "$SCRIPTS_DIR/patch-require-builtin.py" || echo "WARN: require-builtin fallback patch failed"
+  # [ripgrep] rgPath 被 realpath 成 /data/data/...，该前缀下 spawn 一律 EACCES
+  # （SELinux）→ 文件搜索整个不可用。改写为同一目录的 /data/user/0/ 另一条路径。
+  # 刻意不用全局 --preserve-symlinks：那会改掉所有模块的解析路径，代价远大于收益。
+  python3 "$SCRIPTS_DIR/patch-ripgrep-path.py" || echo "WARN: rgPath prefix patch failed"
 fi
 
 # [koffi] FFI 库：仅 glibc/x64 预编译。真实消费方只有 dsh-subprocess-local 的
