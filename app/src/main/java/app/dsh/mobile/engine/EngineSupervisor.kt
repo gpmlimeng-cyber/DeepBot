@@ -211,6 +211,35 @@ class EngineSupervisor(private val ctx: Context) {
      * 确定性崩溃（坏配置）每次堆栈一致 → 同签名；
      * 偶发崩溃（OOM/被杀）尾部随机 → 不同签名不累计。
      */
+    /**
+     * 把一次启动的耗时落进 `state.json`（v1.3.6）。
+     *
+     * 为什么：用户报「第一次必失败」时，我们没有可读的启动时间轴，只能靠猜。
+     * 这里记全了：各阶段耗时（install / spawn / health-poll）、总耗时、本次用的超时、
+     * 是否首启、第几次重试、失败原因。下次换人接手，读一次文件就够。
+     */
+    private fun writeBootReport(
+        steps: Map<String, Long>,
+        totalMs: Long,
+        healthTimeoutMs: Long,
+        firstBoot: Boolean,
+        retryCount: Int,
+        failure: String?,
+    ) {
+        runCatching {
+            val obj = org.json.JSONObject()
+            steps.forEach { (k, v) -> obj.put(k, v) }
+            ShellState.write(ctx, mapOf(
+                "engineBoot" to obj,
+                "engineReadyMs" to totalMs,
+                "healthTimeoutMs" to healthTimeoutMs,
+                "firstBoot" to firstBoot,
+                "retryCount" to retryCount,
+                "retryReason" to (failure ?: "ok"),
+            ))
+        }
+    }
+
     private fun failureSignature(status: Int?): String {
         // 签名必须稳定：崩溃堆栈里的行号/内存地址/时间戳每次都变，原文哈希会让
         // streak 永远重置 → 永远到不了阶段阈值（自愈失效实测根因）。
@@ -234,11 +263,16 @@ class EngineSupervisor(private val ctx: Context) {
             var deterministicFailure: String? = null
             val bootT0 = System.currentTimeMillis()
             var stepT = bootT0
+            val bootSteps = LinkedHashMap<String, Long>()
             fun step(name: String) {
                 val now = System.currentTimeMillis()
+                bootSteps[name] = now - stepT
                 Log.i(TAG, "boot step $name: ${now - stepT}ms (total ${now - bootT0}ms)")
                 stepT = now
             }
+            // 首启判定（v1.3.6）：成功启动过一次就写下标记，之后都用 12s；没有标记的那次给 60s。
+            val readyMarker = File(EngineConfig.engineRoot(ctx), ".engine-ready-once")
+            val firstBoot = !readyMarker.isFile
             try {
                 // 启动前先把被误隔离的引擎内置 patch 恢复（自愈；防 ENOENT fail-loud）
                 val healed = withContext(Dispatchers.IO) { guardian.restoreQuarantinedBuiltinOverlays() }
@@ -305,13 +339,18 @@ class EngineSupervisor(private val ctx: Context) {
                 process = proc
                 step("spawn")
 
-                val healthy = pollHealth(EngineConfig.activePort, proc)
+                val healthTimeoutMs = if (firstBoot) EngineConfig.HEALTH_TIMEOUT_FIRST_MS
+                    else EngineConfig.HEALTH_TIMEOUT_MS
+                val healthy = pollHealth(EngineConfig.activePort, proc, healthTimeoutMs)
                 step("health-poll")
                 if (healthy) {
                     withContext(Dispatchers.IO) {
                         guardian.resetCrashStreak()
                         guardian.snapshotLastGood()
+                        runCatching { readyMarker.createNewFile() }
                     }
+                    writeBootReport(bootSteps, System.currentTimeMillis() - bootT0,
+                        healthTimeoutMs, firstBoot, backoffIndex, null)
                     backoffIndex = 0
                     // 引擎 healthy = 待重启标记解除（激活/停用/卸载的扩展自此刻生效）
                     app.dsh.mobile.engine.ExtensionManager.clearPendingRestart()
@@ -339,6 +378,8 @@ class EngineSupervisor(private val ctx: Context) {
                 } else {
                     // 健康检查超时：引擎没死是我们主动停的——很可能是慢启动，
                     // 绝不计入崩溃计数（m1.6.4 真机误伤教训）
+                    writeBootReport(bootSteps, System.currentTimeMillis() - bootT0,
+                        healthTimeoutMs, firstBoot, backoffIndex, "health-timeout")
                     proc.stop()
                 }
             } catch (e: EngineStartException) {
@@ -519,11 +560,15 @@ class EngineSupervisor(private val ctx: Context) {
     }
 
     /** 轮询 http://127.0.0.1:port 直到响应/超时/子进程提前死亡 */
-    private suspend fun pollHealth(port: Int, proc: EngineProcess): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun pollHealth(
+        port: Int,
+        proc: EngineProcess,
+        timeoutMs: Long = EngineConfig.HEALTH_TIMEOUT_MS,
+    ): Boolean = withContext(Dispatchers.IO) {
         // v1.2.122：改用单调时钟。之前用 System.currentTimeMillis()，用户时钟/时区调整
         // 或对齐校正都可能让 deadline 提前/滞后，日志里出现过 92s 的健康轮询（远超 12s 上限）。
         val started = SystemClock.elapsedRealtime()
-        val deadline = started + EngineConfig.HEALTH_TIMEOUT_MS
+        val deadline = started + timeoutMs
         var attempts = 0
         var pausedMs = 0L
         val url = "http://127.0.0.1:$port/"

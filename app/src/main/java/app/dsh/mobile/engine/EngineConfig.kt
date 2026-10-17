@@ -99,6 +99,15 @@ object EngineConfig {
      * 保留原语义：到点仍未 Healthy 即判定本轮失败，走 Backoff 重试。
      */
     const val HEALTH_TIMEOUT_MS = 12_000L
+    /**
+     * 首次启动（资源刚解包）的健康检查超时（v1.3.6）。
+     *
+     * 12s 对**冷启动**太紧：首启要跑 node 冷启动、profiles 生成、patch 解析，
+     * 用户实测就是「第一次必失败、第二次就好」。解包本身不占这个窗口 —— 启动是串行的，
+     * 解包在 spawn 之前完成，健康计时从 spawn 之后才开始（EngineSupervisor 顺序可查）。
+     * 所以放宽只针对「还没成功启动过一次」的那一次，热启动仍用 12s。
+     */
+    const val HEALTH_TIMEOUT_FIRST_MS = 60_000L
     const val HEALTH_INTERVAL_MS = 500L
 
     /** web listen 后的稳定观察窗：挺过此窗才判定 Healthy 并快照 last-good */
