@@ -52,3 +52,6 @@ android/app/src/main/assets/deepbot/ds-bot.zip
 *.bak
 *.orig
 *.rej
+
+# 仓库根目录下以 _ 开头的临时导出（早前调 UI 的残留）
+/_*.xml
