@@ -622,10 +622,18 @@ object EngineConfig {
             |#   narrow-rightbar - narrow screens: the right panel (diff / changes view)
             |#                     is promoted to a full-screen overlay while open, which
             |#                     works around computeColumns() collapsing it to width 0.
-            |# 单变量实验（2026-10-18）：三个 narrow-* 客户端插件**全部停用**，其它一行未改。
-            |# 目的：确认「全部设置空白 / 发现页浮层 / 左侧导轨」是否是它们引起的。
-            |# 回退方式：把下面三组 insert 恢复即可（assets 与部署逻辑都还在）。
-            |# - insert: [android-narrow-sidebar / -settings / -rightbar]
+            |- insert:
+            |    - id: android-narrow-sidebar
+            |      name: ./android-plugins/narrow-sidebar/index.js
+            |
+            |- insert:
+            |    - id: android-narrow-settings
+            |      name: ./android-plugins/narrow-settings/index.js
+            |
+            |- insert:
+            |    - id: android-narrow-rightbar
+            |      name: ./android-plugins/narrow-rightbar/index.js
+            |
             |""".trimMargin()
         runCatching {
             if (!f.isFile || f.readText() != body) f.writeText(body)
