@@ -411,6 +411,13 @@ class MainActivity : Activity() {
                 applyUiViewport(view)
                 // 壳层注入：CSS 变量（CSS px）+ inject.json 规则 + 品牌替换
                 shell.inject()
+                // 视口三数对齐（v1.3.0，一次性证据）：dpr / innerWidth / screenWidthDp 同一条日志
+                view.evaluateJavascript(
+                    "console.log('[dsh-android] dpr='+window.devicePixelRatio" +
+                        "+' innerWidth='+window.innerWidth" +
+                        "+' screenWidthDp='+${resources.configuration.screenWidthDp})",
+                    null
+                )
                 // v1.3.1：首屏加载完成 → 淡出启动遮罩（页面这时才真的可以操作）
                 dismissSplash()
                 // 竖屏「对话流被挤压」修复已改为**引擎侧客户端插件**
@@ -1353,9 +1360,9 @@ class MainActivity : Activity() {
      */
     private fun foldWidthCss(): Int {
         val d = effectiveDensityOf().coerceAtLeast(0.5f)
-        val avail = if (::webView.isInitialized) webView.width / d else FOLD_CLOSED_CSS.toFloat()
-        val candidates = listOf(FOLD_CLOSED_CSS, FOLD_OPEN_CSS, FOLD_OPEN_LANDSCAPE_CSS)
-        return candidates.minByOrNull { kotlin.math.abs(it - avail) } ?: FOLD_CLOSED_CSS
+        val avail = if (::webView.isInitialized) webView.width / d else FOLD_WIDTH_CSS.toFloat()
+        val candidates = listOf(FOLD_WIDTH_CSS, UNFOLD_PORTRAIT_CSS, UNFOLD_LANDSCAPE_CSS)
+        return candidates.minByOrNull { kotlin.math.abs(it - avail) } ?: FOLD_WIDTH_CSS
     }
 
     /** 与 WebView 一致的有效密度（副屏 density=1 时退回系统主屏） */
@@ -1714,15 +1721,26 @@ class MainActivity : Activity() {
          * 允许双指缩放细看。执行时机 onPageFinished（此时 clientWidth=设备宽）。
          */
         /**
-         * 折叠屏三种形态的布局宽度（CSS px），实测自 `dumpsys display`（本机 density 2.75）：
-         *   折叠态（外屏）    1168 × 1712 px → 425 × 623 dp  → 425
-         *   展开态（内屏竖）  1672 × 2364 px → 608 × 860 dp  → 608
-         *   展开态（内屏横）  2364 × 1672 px → 860 × 608 dp  → 860
-         * 三个值都**按用户手选**生效，不跟传感器自动翻转。
+         * 折叠态（外屏）布局宽度，CSS px。
+         * WebView 实测 `innerWidth=424`、`dpr=2.75`；1168 ÷ 2.75 = 424.7 → 取 425。
+         * 注意不要用 `Configuration.screenWidthDp≈452.4`：那是系统另一套密度基准
+         * （1168 ÷ 452.4 ≈ 2.58）算出来的，按 452 注入会多出约 6% 的横向溢出/缩放。
          */
-        private const val FOLD_CLOSED_CSS = 425
-        private const val FOLD_OPEN_CSS = 608
-        private const val FOLD_OPEN_LANDSCAPE_CSS = 860
+        private const val FOLD_WIDTH_CSS = 425
+
+        /**
+         * 展开态（内屏竖屏）布局宽度，CSS px：1672 ÷ 2.75 = 608。
+         * **暂不启用**：等接 Jetpack WindowManager 的 FoldingFeature 再按姿态切换，
+         * 现在写死会让折叠着拿的手机也按 608 排。
+         */
+        @Suppress("unused")
+        private const val UNFOLD_PORTRAIT_CSS = 608
+
+        /**
+         * 展开态（内屏横屏）布局宽度，CSS px：2364 ÷ 2.75 = 860。**暂不启用**（同上）。
+         */
+        @Suppress("unused")
+        private const val UNFOLD_LANDSCAPE_CSS = 860
 
     /** 固定宽带视口（折叠/平板/电脑共用）：W 为 CSS px，按屏宽缩放塞进可视区 */
         private fun viewportJs(w: Int): String =
