@@ -130,6 +130,10 @@ if command -v python3 >/dev/null 2>&1; then
   export DSH_PATCH_TARGET="$ROOT"
   python3 "$SCRIPTS_DIR/patch-apiproxy.py" || echo "WARN: apiproxy patch failed; openPath falls back to native opener"
   python3 "$SCRIPTS_DIR/patch-webview-polyfill.py" || echo "WARN: webview polyfill patch failed"
+  # [require-builtin] 上游只发 darwin/linux/win32 的 napi 绑定（android 包在 npm 上 404），
+  # 而 dsh-app-boot 在宿主准备阶段就 require 它 → 引擎起不来。改用纯 JS 回退，
+  # 依赖启动参数 --expose-internals（EngineProcess.kt 已带）。
+  python3 "$SCRIPTS_DIR/patch-require-builtin.py" || echo "WARN: require-builtin fallback patch failed"
 fi
 
 # [koffi] FFI 库：仅 glibc/x64 预编译。真实消费方只有 dsh-subprocess-local 的
