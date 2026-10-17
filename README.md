@@ -1,29 +1,43 @@
-﻿# DSH Mobile （Deepseek-harness-Mobile)
+# DeepBot（DSH Mobile 安卓壳 · 二次开发）
 
 <p align="center">
-  <img src="docs/promo/dsh-mobile-github.png" alt="DSH Mobile — DeepSeek Harness for Android" width="100%">
+  <img src="docs/promo/dsh-mobile-github.png" alt="DeepBot — DeepSeek Harness for Android" width="100%">
 </p>
 
-**DeepSeek Harness 的 Android 完整移植 —— 官方 dsh 引擎原样跑在手机沙箱里，无需 Root、无需 Termux、无需电脑。**
 
-> 🌐 [English](README_EN.md) · [Deutsch](README.de.md)
+**一句话**：Android 壳 + **官方 dsh 引擎** + **我们二开的 ds-bot** 三层拼起来，跑在手机沙箱里；
+三层各自的版本都锁在 `versions.env` 里，改版本只改那一个文件。
 
-[![CI](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/android-build.yml/badge.svg)](https://github.com/gpmlimeng-cyber/DeepBot/actions/workflows/android-build.yml)
-![Release](https://img.shields.io/badge/release-v1.3.0-blue)
-![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-green)
-![License](https://img.shields.io/badge/license-MIT-brightgreen)
+> ⚠️ **这不是上游官方发布。** 本仓库是对 [Soodok/Deepseek-Harness-Local-Android](https://github.com/Soodok/Deepseek-Harness-Local-Android)
+> 的二次开发（MIT），保留原作者署名与许可。上游的发布页、CI、issue 链接都不适用于本仓库。
 
-[中文](#简介) · [English](README_EN.md)
+## 三层关系
+
+| 层 | 来源 | 锁在哪 | 产物 |
+|---|---|---|---|
+| 壳（本仓库） | 我们维护 | 本仓库代码 | `app-debug.apk` |
+| 引擎 | 官方 `@deepseek-ai/dsh`（npm） | `versions.env`：版本 + **sha512 integrity** | `assets/runtime.zip`（不入库） |
+| ds-bot 插件 | 我们的二开仓库 `gpmlimeng-cyber/dsh-bot` | `versions.env`：**commit sha**（不用分支） | `assets/deepbot/ds-bot.zip`（不入库） |
+
+**`versions.env` 是唯一的版本真源**；仓库里不放任何产出的 zip 或 apk。
+
+## 从零构建（三步）
+
+```bash
+./runtime/collect-termux-runtime.sh android/app/src/main/assets/runtime.zip aarch64  # ① 引擎运行时
+./scripts/fetch-dsbot.sh                                                            # ② ds-bot
+./gradlew assembleDebug                                                             # ③ 壳
+# 或一键：./scripts/build-apk.sh
+```
+
+## 安卓侧的补丁（别人为什么直接换官方引擎会起不来）
+
+官方 release 里没有这些补丁：`koffi`/`node-pty` 桩、`require-builtin` JS 回退、
+`rgPath` 前缀改写、`flock`、`apiProxy`、`webview-polyfill`、`collapseWidth=0`。
+**所以 Android 上只读官方版本号，不提供一键升级引擎**——升级必须走本仓库重建 runtime。
+补丁清单的唯一来源是 `runtime/collect-termux-runtime.sh`，说明见 `docs/补丁.md`。
 
 ---
-
-## 简介
-
-DSH Mobile 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DeepSeek 开源的 Agent 框架）的 **Android 完整移植**。完整的 Node.js Agent 引擎运行在应用沙箱内，监听 `127.0.0.1` 回环——会话、凭证、工作区**全部留在手机上**，装完即用；是否有模型请求出设备，取决于你配置的模型服务地址。
-
-**这是**：官方 dsh 引擎（锁定 `0.2.0-rc.2`）+ 自建 Android 运行环境。插件体系、WebUI、工具调用链全部来自上游，本项目负责运行层：bionic 版 Node.js 运行时、前台服务保活、三级权限、扩展中心。**桌面上 dsh 能做的事，这里都能做。**
-
-**这不是**：不是自研 Agent 框架，不是端侧大模型 App（模型走你配置的 API），不是手机自动化 Agent（读屏点击是交给 AI 的工具之一），**也不是 proot / Ubuntu 容器方案**——不套 Linux 容器、不装发行版 rootfs，Node.js 运行时与整套工具链都以 Android 原生（bionic）二进制直接打进 APK，装完即用。
 
 ## ⚡ 性能实测
 
@@ -315,3 +329,11 @@ ds-bot 给底栏留 56px 的规则挂在 `[data-dsh-frame]` 上（`src/client/na
 [MIT](LICENSE)。运行时组件沿用其原始许可证（MIT / BSD / ISC / Zlib）；`@deepseek-ai/dsh` 归 DeepSeek AI 所有。
 
 本项目为独立社区作品，与 DeepSeek 无隶属关系。
+
+---
+
+## 许可与署名
+
+- 本仓库基于 [Soodok/Deepseek-Harness-Local-Android](https://github.com/Soodok/Deepseek-Harness-Local-Android) 二次开发，遵循 **MIT**。
+- 原著作权归原作者所有；本仓库的修改同样以 MIT 发布。完整条款见 [LICENSE](LICENSE)（保留双方署名）。
+- ds-bot 插件基于 [Fei2411/DeepSeek-Bot](https://github.com/Fei2411/DeepSeek-Bot) 二次开发，见 `gpmlimeng-cyber/dsh-bot`。
