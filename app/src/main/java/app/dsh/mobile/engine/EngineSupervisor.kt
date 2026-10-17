@@ -231,6 +231,9 @@ class EngineSupervisor(private val ctx: Context) {
             steps.forEach { (k, v) -> obj.put(k, v) }
             ShellState.write(ctx, mapOf(
                 "engineBoot" to obj,
+                // 与产品口径对齐的两个数：fork 花了多久、从启动到可用花了多久
+                "engineSpawnMs" to steps["spawn"],
+                "firstReadyMs" to totalMs,
                 "engineReadyMs" to totalMs,
                 "healthTimeoutMs" to healthTimeoutMs,
                 "firstBoot" to firstBoot,

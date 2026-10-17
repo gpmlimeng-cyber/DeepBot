@@ -254,6 +254,18 @@ class DeepBotShell(
   var d=document.documentElement;
   var cc=document.querySelector('[class*="centerCol"]');
   var cs=cc?getComputedStyle(cc):null,r=cc?cc.getBoundingClientRect():null;
+  // 逐个列出所有匹配元素（v1.3.7）：只看第一个匹配会认错元素——56px 恰好等于
+  // ds-bot 左导轨宽度，可能量到的根本不是会话列。class/left/right/宽度/display/
+  // gridColumn 一起给，元素身份才说得清。
+  function allOf(sel){
+    var out=[],ns=document.querySelectorAll(sel),i;
+    for(i=0;i<ns.length;i++){
+      var e=ns[i],b=e.getBoundingClientRect(),s2=getComputedStyle(e);
+      out.push({cls:String(e.className||'').slice(0,160),l:Math.round(b.left),
+        r:Math.round(b.right),w:Math.round(b.width),d:s2.display,gc:s2.gridColumn});
+    }
+    return out;
+  }
   return JSON.stringify({
     dpr:window.devicePixelRatio,
     innerWidth:window.innerWidth,
@@ -267,6 +279,7 @@ class DeepBotShell(
     btMobile:d.getAttribute('data-bt-mobile'),
     btPortrait:d.getAttribute('data-bt-portrait'),
     dshFrame:d.hasAttribute('data-dsh-frame'),
+    layoutAll:{center:allOf('[class*="centerCol"]'),side:allOf('[class*="sidebarCol"]')},
     bridge:typeof window.DeepBotShell !== 'undefined',
     settingsLayer:!!document.querySelector('.bt-settings-layer'),
     entryInserted:!!document.getElementById('deepbot-shell-row'),
