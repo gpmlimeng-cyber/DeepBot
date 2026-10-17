@@ -10,7 +10,7 @@ captures/
 *.apk
 *.aab
 # 运行时快照不入库（CI 构建时注入）
-app/src/main/assets/runtime.zip
+android/app/src/main/assets/runtime.zip
 # 签名密钥绝不入库
 keystore/
 *.keystore
@@ -46,4 +46,9 @@ node_modules/
 scripts/probes/_parts/
 scripts/probes/*.bin
 # ds-bot 构建产物：由 scripts/fetch-dsbot.sh 按 versions.env 的 commit 现取现打
-app/src/main/assets/deepbot/ds-bot.zip
+android/app/src/main/assets/deepbot/ds-bot.zip
+
+# 编辑器/合并/备份残留一律不入库（机器可读的兜底，不靠人工检查）
+*.bak
+*.orig
+*.rej
