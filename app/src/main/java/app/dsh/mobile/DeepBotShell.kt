@@ -302,23 +302,31 @@ class DeepBotShell(
   function el(sel){return document.querySelector(sel);}
   function h(e){return e?Math.round(e.getBoundingClientRect().height):null;}
   function n(sel){return document.querySelectorAll(sel).length;}
+  // 元素盒子 + 定位四件套：浮层「浮在屏幕中间」通常是 position:fixed 且锚点/inset 为空
+  function box(sel){var e=el(sel);if(!e)return null;var b=e.getBoundingClientRect(),c=getComputedStyle(e);
+    return {w:Math.round(b.width),h:Math.round(b.height),l:Math.round(b.left),t:Math.round(b.top),
+      pos:c.position,top:c.top,left:c.left,right:c.right,bottom:c.bottom,disp:c.display};}
   var layer=el('.bt-settings-layer'), disc=el('.bt-discover');
   var scr=layer?layer.querySelector('[data-screen]'):null;
-  var page=el('.bt-settings-page')||el('.bt-settings-nav');
-  var name=el('.bt-settings-name');
-  var route=layer?(layer.getAttribute('data-tabpage')!==null?'settings-tab':'settings')
-           :(disc?'discover':(el('.bt-side')?'chat':'other'));
+  var name=el('.bt-settings-name'), rail=el('.bt-side');
+  var firstCard=el('.bt-settings-group-card'), firstRow=el('.bt-settings-item');
   return JSON.stringify({
-    route:route,
-    settingsLayer:!!layer,
+    route:layer?(disc?'discover':(layer.getAttribute('data-tabpage')!==null?'settings-tab':'settings'))
+         :(rail?'chat':'other'),
     screen:scr?scr.getAttribute('data-screen'):null,
-    pageH:h(page),
-    pageDisp:page?getComputedStyle(page).display:null,
+    settingsLayer:!!layer,
     rows:n('.bt-settings-item'),
     groupCards:n('.bt-settings-group-card'),
-    navH:h(el('.bt-settings-nav')),
-    discoverH:h(disc),
     discoverItems:n('.bt-discover .bt-settings-item'),
+    htmlAttrs:[].slice.call(d.attributes).map(function(a){return a.name;}).join(','),
+    layerBox:box('.bt-settings-layer'),
+    dialogBox:box('.bt-settings'),
+    navBox:box('.bt-settings-nav'),
+    cardBox:box('.bt-settings-group-card'),
+    rowBox:box('.bt-settings-item'),
+    discoverLayerBox:box('.bt-settings-layer.bt-discover'),
+    discoverDialogBox:box('.bt-discover .bt-settings'),
+    railBox:box('.bt-side'),
     bg:layer?getComputedStyle(layer).backgroundColor:null,
     ink:name?getComputedStyle(name).color:null,
     text:(layer?document.body.innerText:'').replace(/\s+/g,' ').slice(0,120)
