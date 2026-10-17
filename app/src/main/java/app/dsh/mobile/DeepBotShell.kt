@@ -36,6 +36,11 @@ class DeepBotShell(
     private var insetImePx = 0
     private var lastSource = ""
 
+    /** 页面采样循环（v1.3.8）：只在值变化时落盘，避免每 1.5s 写一次磁盘 */
+    private val probeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var lastPageProbe = ""
+    private var probeTicks = 0
+
     private val res get() = activity.resources
 
     /** 有效 CSS 密度：副屏把 density 报成 1 时退回系统主屏密度 */
@@ -142,6 +147,44 @@ class DeepBotShell(
         runCatching { view.evaluateJavascript(js, null) }
         runCatching { view.evaluateJavascript(BRAND_JS, null) }
         writeState(spec, top, bottom)
+        startPageProbe()
+    }
+
+    /**
+     * 页面采样（v1.3.8）：把「当前在哪一页、那一页有没有内容」周期性写进 state.json。
+     *
+     * 为什么需要：注入只在页面加载/inset 变化时跑一次，而用户是在那之后才点进
+     * 「我的 → 全部设置」「发现」的；那两页到底有没有渲染、高度是不是 0、是不是白字白底，
+     * 壳这边看不到。每 1.5s 采一次，只在**结果变化**时落盘（同一页重复写没有意义）。
+     */
+    private fun startPageProbe() {
+        probeTicks = 0
+        probeHandler.removeCallbacksAndMessages(null)
+        val tick = object : Runnable {
+            override fun run() {
+                val v = web()
+                if (v == null || activity.isFinishing) return
+                probeTicks++
+                // 前 40 次（约 60s）密集采，之后降到 5s 一次：覆盖导航与首屏渲染，也不长期吵
+                val next = if (probeTicks < 40) 1500L else 5000L
+                runCatching {
+                    v.evaluateJavascript(PAGE_PROBE_JS) { raw ->
+                        runCatching {
+                            val text = JSONTokener(raw).nextValue() as String
+                            if (text != lastPageProbe) {
+                                lastPageProbe = text
+                                ShellState.write(activity, mapOf(
+                                    "pageProbe" to JSONObject(text),
+                                    "pageProbeAt" to System.currentTimeMillis(),
+                                ))
+                            }
+                        }
+                    }
+                }
+                probeHandler.postDelayed(this, next)
+            }
+        }
+        probeHandler.postDelayed(tick, 1200)
     }
 
     /**
@@ -249,6 +292,40 @@ class DeepBotShell(
          * 与 PROBE_JS 的区别是它**不在页面里常驻**，只在注入后取一次数，结果直接落
          * state.json，不依赖 logcat。
          */
+        /**
+         * 页面采样脚本（v1.3.8）：判断「空壳」到底是没渲染、高度为 0，还是白字白底。
+         * 只读 DOM，不改任何东西。
+         */
+        private val PAGE_PROBE_JS = """
+(function(){try{
+  var d=document.documentElement;
+  function el(sel){return document.querySelector(sel);}
+  function h(e){return e?Math.round(e.getBoundingClientRect().height):null;}
+  function n(sel){return document.querySelectorAll(sel).length;}
+  var layer=el('.bt-settings-layer'), disc=el('.bt-discover');
+  var scr=layer?layer.querySelector('[data-screen]'):null;
+  var page=el('.bt-settings-page')||el('.bt-settings-nav');
+  var name=el('.bt-settings-name');
+  var route=layer?(layer.getAttribute('data-tabpage')!==null?'settings-tab':'settings')
+           :(disc?'discover':(el('.bt-side')?'chat':'other'));
+  return JSON.stringify({
+    route:route,
+    settingsLayer:!!layer,
+    screen:scr?scr.getAttribute('data-screen'):null,
+    pageH:h(page),
+    pageDisp:page?getComputedStyle(page).display:null,
+    rows:n('.bt-settings-item'),
+    groupCards:n('.bt-settings-group-card'),
+    navH:h(el('.bt-settings-nav')),
+    discoverH:h(disc),
+    discoverItems:n('.bt-discover .bt-settings-item'),
+    bg:layer?getComputedStyle(layer).backgroundColor:null,
+    ink:name?getComputedStyle(name).color:null,
+    text:(layer?document.body.innerText:'').replace(/\s+/g,' ').slice(0,120)
+  });
+}catch(e){return JSON.stringify({probeError:String(e)})}})()
+        """.trimIndent()
+
         private val MEASURE_JS = """
 (function(){try{
   var d=document.documentElement;
